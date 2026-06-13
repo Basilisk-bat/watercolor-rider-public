@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   chaikinSmooth,
   distanceToSegment,
+  erasePolyline,
   nearestDistanceToPolyline,
   pointsToSegments,
   simplifyPoints,
@@ -75,4 +76,36 @@ test('totalLength sums adjacent segment distances', () => {
   ]);
 
   assert.equal(length, 10);
+});
+
+test('erasePolyline cuts a rail into remaining fragments', () => {
+  const fragments = erasePolyline(
+    [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 }
+    ],
+    { x: 50, y: 0 },
+    10,
+    5
+  );
+
+  assert.equal(fragments.length, 2);
+  assert.equal(Math.round(fragments[0][0].x), 0);
+  assert.equal(Math.round(fragments[0].at(-1).x), 40);
+  assert.equal(Math.round(fragments[1][0].x), 60);
+  assert.equal(Math.round(fragments[1].at(-1).x), 100);
+});
+
+test('erasePolyline discards fragments below the minimum rideable length', () => {
+  const fragments = erasePolyline(
+    [
+      { x: 0, y: 0 },
+      { x: 30, y: 0 }
+    ],
+    { x: 15, y: 0 },
+    10,
+    12
+  );
+
+  assert.deepEqual(fragments, []);
 });

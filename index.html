@@ -21,12 +21,19 @@
           <div class="menu-actions" aria-label="Menu actions">
             <button class="menu-action primary-action" id="menuStart" type="button">
               <i data-lucide="play"></i>
-              <span>Ride</span>
+              <span>Start</span>
             </button>
-            <button class="menu-action" id="menuBrush" type="button">
-              <i data-lucide="pen-line"></i>
-              <span>Brush</span>
+            <button class="menu-action" id="menuReset" type="button">
+              <i data-lucide="rotate-ccw"></i>
+              <span>Reset Rider</span>
             </button>
+            <button class="menu-action" id="menuHelp" type="button" aria-expanded="false" aria-controls="menuHelpPanel">
+              <i data-lucide="circle-help"></i>
+              <span>Help</span>
+            </button>
+          </div>
+          <div class="menu-help" id="menuHelpPanel" hidden>
+            <p>Draw rails with the brush. Cut rails with the eraser. Start rides from the first rail.</p>
           </div>
         </div>
       </section>

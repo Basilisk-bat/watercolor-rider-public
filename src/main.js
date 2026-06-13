@@ -3,16 +3,17 @@ import { createIcons, icons } from 'lucide';
 import {
   chaikinSmooth,
   distance,
+  erasePolyline,
   nearestDistanceToPolyline,
   simplifyPoints,
   totalLength
 } from './trackGeometry.js';
 import {
-  addRideTrack,
+  ENGINE_FPS,
   createRideWorld,
   getRideTelemetry,
-  removeRideTrack,
   resetRide,
+  setRideTracks,
   stepRide
 } from './ridePhysics.js';
 
@@ -24,7 +25,9 @@ const ctx = canvas.getContext('2d', { alpha: false });
 const mainMenu = document.querySelector('#mainMenu');
 const menuToggle = document.querySelector('#menuToggle');
 const menuStart = document.querySelector('#menuStart');
-const menuBrush = document.querySelector('#menuBrush');
+const menuReset = document.querySelector('#menuReset');
+const menuHelp = document.querySelector('#menuHelp');
+const menuHelpPanel = document.querySelector('#menuHelpPanel');
 const menuClose = document.querySelector('#menuClose');
 const drawTool = document.querySelector('#drawTool');
 const eraseTool = document.querySelector('#eraseTool');
@@ -62,6 +65,7 @@ const state = {
   pointer: null,
   currentStroke: [],
   tracks: [],
+  history: [],
   rideWorld: createRideWorld(),
   rider: null,
   paperPattern: null,
@@ -114,15 +118,17 @@ function updateDebugDiagnostics() {
     debugZoom.textContent = `${Math.round(state.camera.zoom * 100)}%`;
   }
   if (debugWetness) {
-    debugWetness.textContent = '0%';
+    const wetness = state.currentStroke.length > 1 ? 86 : Math.min(72, Math.round(state.tracks.length * 9));
+    debugWetness.textContent = `${wetness}%`;
   }
   if (debugMass) {
-    debugMass.textContent = '0';
+    const mass = state.tracks.reduce((sum, track) => sum + Math.max(0, track.points.length - 1), 0);
+    debugMass.textContent = String(mass);
   }
 }
 
 function publishTelemetry() {
-  const speed = state.rider && state.playing ? Math.hypot(state.rider.velocity.x, state.rider.velocity.y) : 0;
+  const speed = state.rider ? Math.hypot(state.rider.velocity.x, state.rider.velocity.y) : 0;
   app.dataset.playing = String(state.playing);
   app.dataset.mode = state.mode;
   app.dataset.tracks = String(state.tracks.length);
@@ -297,7 +303,7 @@ function seedStarterTrack() {
     { x: Math.min(w - 42, w * 0.92), y: baseY + 42 }
   ];
 
-  addTrack(chaikinSmooth(points, 2), true);
+  addTrack(chaikinSmooth(points, 2), { starter: true, preserve: true, recordHistory: false });
   resetRider();
 }
 
@@ -305,21 +311,33 @@ function buildWatercolorLayers(points, seed) {
   const layers = [];
   const random = mulberry32(seed);
 
-  for (let layer = 0; layer < 8; layer += 1) {
-    const spread = 1.8 + layer * 1.35;
-    layers.push(
-      points.map((point) => ({
+  for (let layer = 0; layer < 18; layer += 1) {
+    const spread = 2.2 + layer * 1.75;
+    const edgeBias = layer / 17;
+    layers.push({
+      points: points.map((point) => ({
         x: point.x + (random() - 0.5) * spread,
         y: point.y + (random() - 0.5) * spread
-      }))
-    );
+      })),
+      alpha: 0.18 - edgeBias * 0.12,
+      widthBoost: 16 - layer * 0.52,
+      blur: layer < 9 ? 0.35 + edgeBias * 1.8 : 0,
+      composite: layer < 11 ? 'multiply' : 'source-over'
+    });
   }
 
   return layers;
 }
 
-function addTrack(rawPoints, starter = false) {
-  const points = starter ? rawPoints : chaikinSmooth(simplifyPoints(rawPoints), 2);
+function syncRideWorld() {
+  setRideTracks(state.rideWorld, state.tracks);
+  state.rider = state.rideWorld.rider;
+  publishTelemetry();
+}
+
+function createTrack(rawPoints, options = {}) {
+  const { starter = false, preserve = false } = options;
+  const points = preserve || starter ? rawPoints.map((point) => ({ ...point })) : chaikinSmooth(simplifyPoints(rawPoints), 2);
 
   if (points.length < 2 || totalLength(points) < 16) {
     return null;
@@ -335,21 +353,43 @@ function addTrack(rawPoints, starter = false) {
     layers: buildWatercolorLayers(points, paletteIndex * 997 + state.tracks.length * 251 + 17)
   };
 
+  return track;
+}
+
+function addTrack(rawPoints, options = {}) {
+  const track = createTrack(rawPoints, options);
+
+  if (!track) {
+    return null;
+  }
+
   state.tracks.push(track);
-  addRideTrack(state.rideWorld, track.id, points);
+  syncRideWorld();
   updateInkMetric();
-  record(starter ? 'starter-track' : 'stroke-added', {
-    points: points.length,
-    length: Math.round(totalLength(points))
+  if (options.recordHistory !== false && !options.starter) {
+    state.history.push({ type: 'add', tracks: [track] });
+  }
+  record(options.starter ? 'starter-track' : 'stroke-added', {
+    points: track.points.length,
+    length: Math.round(totalLength(track.points))
   });
   return track;
 }
 
+function insertTrack(track, index = state.tracks.length) {
+  const safeIndex = Math.max(0, Math.min(index, state.tracks.length));
+  state.tracks.splice(safeIndex, 0, track);
+}
+
 function removeTrack(track) {
-  removeRideTrack(state.rideWorld, track.id);
-  state.tracks = state.tracks.filter((candidate) => candidate !== track);
-  updateInkMetric();
+  const index = state.tracks.indexOf(track);
+  if (index >= 0) {
+    state.tracks.splice(index, 1);
+  } else {
+    state.tracks = state.tracks.filter((candidate) => candidate.id !== track.id);
+  }
   record('stroke-removed', { id: track.id });
+  return index;
 }
 
 function updateInkMetric() {
@@ -383,9 +423,7 @@ function setPlaying(playing) {
 function resetRider() {
   const startTrack = state.tracks[0];
   const start = startTrack?.points[0] ?? { x: state.width * 0.12, y: state.height * 0.28 };
-  state.rider = resetRide(state.rideWorld, { x: start.x + 34, y: start.y - 18 });
-  state.rider.velocity = { x: 250, y: 0 };
-  state.rider.angularVelocity = 0.015;
+  state.rider = resetRide(state.rideWorld, { x: start.x + 1, y: start.y - 5 });
   state.metrics.startX = state.rider.position.x;
   state.metrics.bestDistance = 0;
   state.metrics.currentAir = 0;
@@ -399,16 +437,47 @@ function resetRider() {
 }
 
 function eraseAt(point) {
-  const nearest = state.tracks
-    .map((track) => ({ track, distance: nearestDistanceToPolyline(point, track.points) }))
-    .sort((a, b) => a.distance - b.distance)[0];
+  const radius = 24 / state.camera.zoom;
+  const removals = [];
+  const additions = [];
 
-  if (nearest && nearest.distance <= 24) {
-    removeTrack(nearest.track);
-    return true;
+  for (const track of [...state.tracks]) {
+    if (nearestDistanceToPolyline(point, track.points) > radius) {
+      continue;
+    }
+
+    const fragments = erasePolyline(track.points, point, radius, 18);
+    const index = removeTrack(track);
+    removals.push({ track, index });
+
+    fragments.forEach((fragment, fragmentIndex) => {
+      const nextTrack = createTrack(fragment, { preserve: true });
+      if (nextTrack) {
+        additions.push({ track: nextTrack, index: index + fragmentIndex });
+      }
+    });
   }
 
-  return false;
+  if (removals.length === 0) {
+    return false;
+  }
+
+  for (const addition of additions) {
+    insertTrack(addition.track, addition.index);
+  }
+
+  syncRideWorld();
+  updateInkMetric();
+  state.history.push({
+    type: 'erase',
+    removed: removals,
+    added: additions.map(({ track }) => track)
+  });
+  record('erase-cut', {
+    removed: removals.length,
+    added: additions.length
+  });
+  return true;
 }
 
 function getTrackBounds() {
@@ -459,16 +528,11 @@ function updateMetrics(deltaMs) {
 
   speedMeter.textContent = `${speed.toFixed(1)} px/s`;
   airMeter.textContent = `${state.metrics.longestAir.toFixed(1)}s air`;
-  if (telemetry.status === 'stalled') {
-    setPlaying(false);
-    setStatus('stalled');
-  }
+  setStatus(telemetry.status);
   publishTelemetry();
 
   const bounds = getTrackBounds();
   if (state.rider.position.y > bounds.maxY + 520 || state.rider.position.x < bounds.minX - 520 || state.rider.position.x > bounds.maxX + 700) {
-    state.rider.velocity = { x: 0, y: 0 };
-    state.rider.angularVelocity = 0;
     setPlaying(false);
     setStatus('rinse');
     record('out-of-bounds', {
@@ -504,27 +568,30 @@ function renderTrack(track) {
   ctx.lineJoin = 'round';
 
   ctx.shadowColor = track.palette.wash;
-  ctx.shadowBlur = 14;
-  track.layers.forEach((layerPoints, index) => {
-    ctx.globalCompositeOperation = index < 3 ? 'multiply' : 'source-over';
-    ctx.strokeStyle = index < 3 ? track.palette.wash : track.palette.ink;
-    ctx.globalAlpha = index < 4 ? 0.42 : 0.16;
-    ctx.lineWidth = track.thickness + (track.layers.length - index) * 2.4;
-    drawPath(layerPoints);
+  ctx.shadowBlur = 18;
+  track.layers.forEach((layer, index) => {
+    ctx.globalCompositeOperation = layer.composite;
+    ctx.strokeStyle = index < 13 ? track.palette.wash : track.palette.ink;
+    ctx.globalAlpha = Math.max(0.035, layer.alpha);
+    ctx.lineWidth = track.thickness + layer.widthBoost;
+    ctx.filter = layer.blur > 0 ? `blur(${layer.blur}px)` : 'none';
+    drawPath(layer.points);
     ctx.stroke();
   });
 
+  ctx.filter = 'none';
   ctx.shadowBlur = 0;
   ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 0.22;
+  ctx.globalAlpha = 0.18;
   ctx.strokeStyle = 'rgba(255, 250, 235, 0.72)';
-  ctx.lineWidth = Math.max(7, track.thickness * 0.7);
+  ctx.lineWidth = Math.max(8, track.thickness * 0.86);
   drawPath(track.points);
   ctx.stroke();
 
-  ctx.globalAlpha = 0.8;
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.globalAlpha = 0.28;
   ctx.strokeStyle = track.palette.ink;
-  ctx.lineWidth = Math.max(2, track.thickness * 0.34);
+  ctx.lineWidth = Math.max(1.8, track.thickness * 0.2);
   drawPath(track.points);
   ctx.stroke();
   ctx.restore();
@@ -535,51 +602,91 @@ function renderRider() {
     return;
   }
 
-  const { x, y } = state.rider.position;
-  const angle = state.rider.angle;
+  const points = state.rider.points ?? {};
+
+  if (!points.NOSE || !points.TAIL || !points.PEG) {
+    const { x, y } = state.rider.position;
+    const angle = state.rider.angle;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.strokeStyle = 'rgba(78, 51, 45, 0.72)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-8, 0);
+    ctx.lineTo(8, 0);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  function strokeBetween(a, b, color, width = 1.5) {
+    if (!a || !b) {
+      return;
+    }
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
 
   ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(angle);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
   ctx.shadowColor = 'rgba(52, 43, 34, 0.24)';
-  ctx.shadowBlur = 14;
-  ctx.shadowOffsetY = 6;
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 3;
 
-  ctx.fillStyle = 'rgba(143, 81, 88, 0.22)';
-  ctx.strokeStyle = 'rgba(123, 38, 57, 0.78)';
-  ctx.lineWidth = 2.6;
-  ctx.beginPath();
-  ctx.roundRect(-22, -8, 44, 16, 8);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.strokeStyle = 'rgba(78, 51, 45, 0.62)';
-  ctx.lineWidth = 2.2;
-  ctx.beginPath();
-  ctx.moveTo(-18, 6);
-  ctx.lineTo(18, 6);
-  ctx.stroke();
+  strokeBetween(points.TAIL, points.NOSE, 'rgba(79, 55, 47, 0.8)', 2.2);
+  strokeBetween(points.PEG, points.STRING, 'rgba(79, 55, 47, 0.72)', 1.7);
+  strokeBetween(points.PEG, points.TAIL, 'rgba(79, 55, 47, 0.58)', 1.4);
+  strokeBetween(points.STRING, points.NOSE, 'rgba(79, 55, 47, 0.58)', 1.4);
 
   ctx.shadowBlur = 0;
-  ctx.strokeStyle = 'rgba(43, 53, 52, 0.84)';
-  ctx.lineWidth = 2.8;
-  ctx.beginPath();
-  ctx.moveTo(-7, -9);
-  ctx.lineTo(-2, -25);
-  ctx.lineTo(8, -9);
-  ctx.stroke();
+  strokeBetween(points.BUTT, points.SHOULDER, 'rgba(43, 53, 52, 0.84)', 1.8);
+  strokeBetween(points.SHOULDER, points.LHAND, 'rgba(43, 53, 52, 0.66)', 1.35);
+  strokeBetween(points.SHOULDER, points.RHAND, 'rgba(43, 53, 52, 0.66)', 1.35);
+  strokeBetween(points.BUTT, points.LFOOT, 'rgba(43, 53, 52, 0.68)', 1.35);
+  strokeBetween(points.BUTT, points.RFOOT, 'rgba(43, 53, 52, 0.68)', 1.35);
 
-  ctx.fillStyle = 'rgba(43, 70, 79, 0.9)';
-  ctx.beginPath();
-  ctx.arc(-3, -29, 6, 0, Math.PI * 2);
-  ctx.fill();
+  const scarf = [
+    points.SHOULDER,
+    points.SCARF_0,
+    points.SCARF_1,
+    points.SCARF_2,
+    points.SCARF_3,
+    points.SCARF_4,
+    points.SCARF_5,
+    points.SCARF_6
+  ].filter(Boolean);
+  if (scarf.length > 1) {
+    ctx.strokeStyle = 'rgba(170, 72, 83, 0.76)';
+    ctx.lineWidth = 1.7;
+    ctx.beginPath();
+    ctx.moveTo(scarf[0].x, scarf[0].y);
+    for (let i = 1; i < scarf.length; i += 1) {
+      ctx.lineTo(scarf[i].x, scarf[i].y);
+    }
+    ctx.stroke();
+  }
 
-  ctx.strokeStyle = 'rgba(202, 102, 89, 0.76)';
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.moveTo(5, -21);
-  ctx.lineTo(19, -18);
-  ctx.stroke();
+  if (points.SHOULDER) {
+    ctx.fillStyle = 'rgba(43, 70, 79, 0.88)';
+    ctx.beginPath();
+    ctx.arc(points.SHOULDER.x + 0.4, points.SHOULDER.y - 3.8, 2.9, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  for (const point of [points.PEG, points.TAIL, points.NOSE]) {
+    ctx.fillStyle = 'rgba(255, 248, 232, 0.84)';
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 1.15, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
 }
 
@@ -591,14 +698,17 @@ function renderCurrentStroke() {
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.strokeStyle = 'rgba(32, 72, 96, 0.62)';
-  ctx.lineWidth = 14;
-  ctx.globalAlpha = 0.22;
+  ctx.strokeStyle = 'rgba(64, 132, 154, 0.18)';
+  ctx.lineWidth = 24;
+  ctx.globalAlpha = 0.5;
+  ctx.filter = 'blur(1.2px)';
   drawPath(state.currentStroke);
   ctx.stroke();
 
-  ctx.globalAlpha = 0.78;
-  ctx.lineWidth = 4;
+  ctx.filter = 'none';
+  ctx.globalAlpha = 0.28;
+  ctx.strokeStyle = 'rgba(36, 72, 96, 0.72)';
+  ctx.lineWidth = 3;
   drawPath(state.currentStroke);
   ctx.stroke();
   ctx.restore();
@@ -614,7 +724,7 @@ function renderEraser() {
   ctx.fillStyle = 'rgba(255, 248, 232, 0.38)';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(state.pointer.x, state.pointer.y, 24, 0, Math.PI * 2);
+  ctx.arc(state.pointer.x, state.pointer.y, 24 / state.camera.zoom, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
   ctx.restore();
@@ -720,20 +830,42 @@ function onPointerUp(event) {
 }
 
 function undoStroke() {
-  const last = state.tracks[state.tracks.length - 1];
-  if (last) {
-    removeTrack(last);
+  const action = state.history.pop();
+
+  if (!action) {
+    return;
   }
+
+  if (action.type === 'add') {
+    for (const track of action.tracks) {
+      removeTrack(track);
+    }
+  } else if (action.type === 'erase') {
+    for (const track of action.added) {
+      removeTrack(track);
+    }
+    for (const { track, index } of action.removed.sort((a, b) => a.index - b.index)) {
+      insertTrack(track, index);
+    }
+  } else if (action.type === 'clear') {
+    state.tracks = [...action.tracks];
+  }
+
+  syncRideWorld();
+  updateInkMetric();
+  record('undo', { type: action.type });
 }
 
 function clearCanvas() {
-  for (const track of [...state.tracks]) {
-    removeTrack(track);
-  }
+  const cleared = [...state.tracks];
+  state.tracks = [];
+  state.history.push({ type: 'clear', tracks: cleared });
+  syncRideWorld();
+  updateInkMetric();
   setPlaying(false);
   resetRider();
   setStatus(modeStatus());
-  record('clear');
+  record('clear', { tracks: cleared.length });
 }
 
 let previous = performance.now();
@@ -744,7 +876,7 @@ function loop(now) {
   if (state.playing) {
     let remaining = delta;
     while (remaining > 0) {
-      const step = Math.min(remaining, 1000 / 60);
+      const step = Math.min(remaining, 1000 / ENGINE_FPS);
       stepRide(state.rideWorld, step / 1000);
       remaining -= step;
     }
@@ -764,10 +896,17 @@ menuStart.addEventListener('click', () => {
   setMenuOpen(false);
   setPlaying(true);
 });
-menuBrush.addEventListener('click', () => {
-  setMenuOpen(false);
+menuReset.addEventListener('click', () => {
   setPlaying(false);
-  setMode('draw');
+  resetRider();
+  setStatus(modeStatus());
+  setMenuOpen(false);
+});
+menuHelp.addEventListener('click', () => {
+  const open = menuHelp.getAttribute('aria-expanded') !== 'true';
+  menuHelp.setAttribute('aria-expanded', String(open));
+  menuHelpPanel.hidden = !open;
+  revealChrome();
 });
 menuClose.addEventListener('click', () => setMenuOpen(false));
 resetTool.addEventListener('click', () => {
@@ -807,6 +946,7 @@ window.RPK_RIDER = {
   reset: resetRider,
   clear: clearCanvas,
   addTrack,
+  eraseAt,
   getState: () => ({
     mode: state.mode,
     playing: state.playing,
@@ -821,11 +961,18 @@ window.RPK_RIDER = {
           y: state.rider.position.y,
           speed: Math.hypot(state.rider.velocity.x, state.rider.velocity.y),
           status: state.rider.status,
-          grounded: state.rider.grounded
+          grounded: state.rider.grounded,
+          frame: state.rider.frame,
+          mounted: state.rider.mounted,
+          points: Object.keys(state.rider.points ?? {})
         }
       : null,
     metrics: { ...state.metrics },
     camera: { ...state.camera },
+    engine: {
+      fps: ENGINE_FPS,
+      lines: state.rideWorld.lines.length
+    },
     telemetry: getRideTelemetry(state.rideWorld),
     ui: { ...state.ui },
     log: [...state.log]
