@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watercolor Rider</title>
-    <script type="module" crossorigin src="/watercolor-rider-public/assets/index-CRUCHb1K.js"></script>
+    <script type="module" crossorigin src="/watercolor-rider-public/assets/index-BcJyTsE4.js"></script>
     <link rel="stylesheet" crossorigin href="/watercolor-rider-public/assets/index-BeVMPAup.css">
   </head>
   <body>
@@ -21,10 +21,6 @@
             <h1>Watercolor Rider</h1>
           </div>
           <div class="menu-actions" aria-label="Menu actions">
-            <button class="menu-action primary-action" id="menuStart" type="button">
-              <i data-lucide="play"></i>
-              <span>Start</span>
-            </button>
             <button class="menu-action" id="menuSpawn" type="button">
               <i data-lucide="crosshair"></i>
               <span>Spawn Rider</span>
@@ -36,6 +32,10 @@
             <button class="menu-action" id="undoTool" type="button">
               <i data-lucide="undo-2"></i>
               <span>Undo</span>
+            </button>
+            <button class="menu-action danger" id="clearTool" type="button">
+              <i data-lucide="trash-2"></i>
+              <span>Clear</span>
             </button>
             <button
               class="menu-action"
@@ -49,17 +49,13 @@
               <i data-lucide="sliders-horizontal"></i>
               <span>Diagnostics</span>
             </button>
-            <button class="menu-action danger" id="clearTool" type="button">
-              <i data-lucide="trash-2"></i>
-              <span>Clear</span>
-            </button>
             <button class="menu-action" id="menuHelp" type="button" aria-expanded="false" aria-controls="menuHelpPanel">
               <i data-lucide="circle-help"></i>
               <span>Help</span>
             </button>
           </div>
           <div class="menu-help" id="menuHelpPanel" hidden>
-            <p>Draw rails with the brush. Cut rails with the eraser. Start rides from the first rail.</p>
+            <p>Brush draws rails. Eraser cuts rails. Spawn Rider sets the start point. Space rides or pauses.</p>
           </div>
         </div>
       </section>
