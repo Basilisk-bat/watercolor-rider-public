@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Watercolor Rider</title>
-    <script type="module" crossorigin src="/watercolor-rider-public/assets/index-ZHGKyOS4.js"></script>
-    <link rel="stylesheet" crossorigin href="/watercolor-rider-public/assets/index-DbYm5nhQ.css">
+    <script type="module" crossorigin src="/watercolor-rider-public/assets/index-CRUCHb1K.js"></script>
+    <link rel="stylesheet" crossorigin href="/watercolor-rider-public/assets/index-BeVMPAup.css">
   </head>
   <body>
     <div id="app">
@@ -25,9 +25,33 @@
               <i data-lucide="play"></i>
               <span>Start</span>
             </button>
-            <button class="menu-action" id="menuReset" type="button">
+            <button class="menu-action" id="menuSpawn" type="button">
+              <i data-lucide="crosshair"></i>
+              <span>Spawn Rider</span>
+            </button>
+            <button class="menu-action" id="resetTool" type="button">
               <i data-lucide="rotate-ccw"></i>
               <span>Reset Rider</span>
+            </button>
+            <button class="menu-action" id="undoTool" type="button">
+              <i data-lucide="undo-2"></i>
+              <span>Undo</span>
+            </button>
+            <button
+              class="menu-action"
+              id="debugToggle"
+              type="button"
+              aria-label="Diagnostics"
+              aria-expanded="false"
+              aria-controls="debugDrawer"
+              title="Diagnostics"
+            >
+              <i data-lucide="sliders-horizontal"></i>
+              <span>Diagnostics</span>
+            </button>
+            <button class="menu-action danger" id="clearTool" type="button">
+              <i data-lucide="trash-2"></i>
+              <span>Clear</span>
             </button>
             <button class="menu-action" id="menuHelp" type="button" aria-expanded="false" aria-controls="menuHelpPanel">
               <i data-lucide="circle-help"></i>
@@ -61,34 +85,7 @@
           <button class="tool primary" id="playTool" type="button" aria-label="Ride" title="Ride">
             <i data-lucide="play"></i>
           </button>
-          <button class="tool" id="resetTool" type="button" aria-label="Reset rider" title="Reset rider">
-            <i data-lucide="rotate-ccw"></i>
-          </button>
-          <button class="tool" id="zoomOutTool" type="button" aria-label="Zoom out" title="Zoom out">
-            <i data-lucide="zoom-out"></i>
-          </button>
-          <button class="tool" id="zoomInTool" type="button" aria-label="Zoom in" title="Zoom in">
-            <i data-lucide="zoom-in"></i>
-          </button>
-          <button class="tool" id="undoTool" type="button" aria-label="Undo stroke" title="Undo stroke">
-            <i data-lucide="undo-2"></i>
-          </button>
-          <button class="tool danger" id="clearTool" type="button" aria-label="Clear canvas" title="Clear canvas">
-            <i data-lucide="trash-2"></i>
-          </button>
         </nav>
-
-        <button
-          class="tool debug-toggle"
-          id="debugToggle"
-          type="button"
-          aria-label="Diagnostics"
-          aria-expanded="false"
-          aria-controls="debugDrawer"
-          title="Diagnostics"
-        >
-          <i data-lucide="sliders-horizontal"></i>
-        </button>
       </div>
 
       <aside class="debug-drawer" id="debugDrawer" aria-label="Diagnostics" aria-hidden="true">
@@ -119,8 +116,16 @@
             <dd data-diagnostic="wetness">0%</dd>
           </div>
           <div>
-            <dt>mass</dt>
-            <dd data-diagnostic="mass">0</dd>
+            <dt>pigment</dt>
+            <dd data-diagnostic="pigment">0</dd>
+          </div>
+          <div>
+            <dt>deposited</dt>
+            <dd data-diagnostic="deposited">0</dd>
+          </div>
+          <div>
+            <dt>runoff</dt>
+            <dd data-diagnostic="runoff">0</dd>
           </div>
         </dl>
       </aside>
