@@ -2,6 +2,10 @@
 
 A cozy minimalist browser toy inspired by line rider: paint soft ink rails, then send a tiny rider through the watercolor wash.
 
+## Play in browser
+
+[Launch Watercolor Rider](https://basilisk-bat.github.io/watercolor-rider-public/)
+
 ## Play
 
 - Brush and erase rails directly on the canvas.
