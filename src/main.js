@@ -407,6 +407,72 @@ function fillSoftDot(targetCtx, x, y, radius, color, alpha) {
   targetCtx.fill();
 }
 
+function fillSoftEllipse(targetCtx, x, y, radiusX, radiusY, color, alpha, rotation = 0) {
+  targetCtx.fillStyle = colorWithAlpha(color, alpha);
+  targetCtx.beginPath();
+  targetCtx.ellipse(x, y, radiusX, radiusY, rotation, 0, Math.PI * 2);
+  targetCtx.fill();
+}
+
+function isRunoffCell(glaze, x, y) {
+  if (x < 0 || y < 0 || x >= glaze.width || y >= glaze.height) {
+    return false;
+  }
+  const i = y * glaze.width + x;
+  const worldY = y * glaze.cellSize + glaze.bounds.y;
+
+  return glaze.runMask[i] > 0 && glaze.seedMask[i] === 0 && worldY > glaze.seedMaxY + glaze.cellSize * 2;
+}
+
+function renderRunoffLayer(runCtx, glaze, paletteColor) {
+  runCtx.lineCap = 'round';
+  runCtx.lineJoin = 'round';
+  runCtx.globalCompositeOperation = 'source-over';
+
+  for (let y = 0; y < glaze.height; y += 1) {
+    for (let x = 0; x < glaze.width; x += 1) {
+      if (!isRunoffCell(glaze, x, y)) {
+        continue;
+      }
+
+      const i = y * glaze.width + x;
+      const deposited = glaze.deposited[i];
+      const water = glaze.water[i];
+
+      if (deposited <= 0.001 && water <= 0.001) {
+        continue;
+      }
+
+      const centerX = x * glaze.cellSize + glaze.cellSize * 0.5;
+      const centerY = y * glaze.cellSize + glaze.cellSize * 0.5;
+      const below = isRunoffCell(glaze, x, y + 1);
+      const above = isRunoffCell(glaze, x, y - 1) || isRunoffCell(glaze, x - 1, y - 1) || isRunoffCell(glaze, x + 1, y - 1);
+      const flowAlpha = Math.min(0.09, 0.018 + deposited * 0.024 + water * 0.012);
+
+      if (above || below) {
+        const targetY = centerY + (below ? glaze.cellSize * 0.86 : -glaze.cellSize * 0.46);
+        runCtx.strokeStyle = colorWithAlpha(paletteColor.wash, flowAlpha);
+        runCtx.lineWidth = Math.max(2.2, glaze.cellSize * 0.92 + deposited * 0.12);
+        runCtx.beginPath();
+        runCtx.moveTo(centerX, centerY - glaze.cellSize * 0.42);
+        runCtx.lineTo(centerX + ((i % 3) - 1) * 0.34, targetY);
+        runCtx.stroke();
+      }
+
+      fillSoftEllipse(
+        runCtx,
+        centerX + ((i % 5) - 2) * 0.28,
+        centerY,
+        glaze.cellSize * 0.58,
+        glaze.cellSize * (above || below ? 1.05 : 0.78),
+        paletteColor.wash,
+        flowAlpha * 0.78,
+        0
+      );
+    }
+  }
+}
+
 function createGlazeCanvas(glaze, paletteColor, points = []) {
   const paint = document.createElement('canvas');
   const paintCtx = paint.getContext('2d');
@@ -418,6 +484,8 @@ function createGlazeCanvas(glaze, paletteColor, points = []) {
   const washCtx = wash.getContext('2d');
   const pigment = createLayerCanvas(paint.width, paint.height);
   const pigmentCtx = pigment.getContext('2d');
+  const runs = createLayerCanvas(paint.width, paint.height);
+  const runCtx = runs.getContext('2d');
   const grain = createLayerCanvas(paint.width, paint.height);
   const grainCtx = grain.getContext('2d');
 
@@ -459,22 +527,34 @@ function createGlazeCanvas(glaze, paletteColor, points = []) {
       const granulation = glaze.granulation[i] ?? 0;
       const centerX = px + glaze.cellSize * 0.5;
       const centerY = py + glaze.cellSize * 0.5;
-      const washAlpha = Math.min(0.055, deposited * 0.018 + (wet ? 0.004 : 0));
-      const washRadius = glaze.cellSize * (wet ? 1.05 : 0.85) + Math.min(1.2, deposited * 0.38);
+      const runoff = isRunoffCell(glaze, x, y);
+      const washAlpha = Math.min(0.038, deposited * 0.012 + (wet ? 0.003 : 0));
+      const washRadius = glaze.cellSize * (wet ? 1.34 : 1) + Math.min(1.6, deposited * 0.34);
 
-      fillSoftDot(washCtx, centerX, centerY, washRadius, paletteColor.wash, washAlpha);
-
-      if (edge > 0.002) {
-        const edgeAlpha = Math.min(0.07, edge * 0.045);
-        const edgeRadius = glaze.cellSize * 0.58 + Math.min(1.2, edge * 0.24);
-        fillSoftDot(pigmentCtx, centerX, centerY, edgeRadius, paletteColor.ink, edgeAlpha);
+      if (!runoff) {
+        fillSoftDot(washCtx, centerX, centerY, washRadius, paletteColor.wash, washAlpha);
       }
 
-      if (granulation > 0.006 && roughness > 0.42) {
+      if (edge > 0.002 && !runoff) {
+        const edgeAlpha = Math.min(0.018, edge * 0.016);
+        const edgeRadius = glaze.cellSize * 0.92 + Math.min(1.8, edge * 0.18);
+        fillSoftEllipse(
+          pigmentCtx,
+          centerX,
+          centerY,
+          edgeRadius * 1.52,
+          edgeRadius * 0.82,
+          paletteColor.ink,
+          edgeAlpha,
+          ((i % 7) - 3) * 0.05
+        );
+      }
+
+      if (granulation > 0.012 && roughness > 0.48) {
         const dotX = centerX + ((i % 5) - 2) * 0.42;
         const dotY = centerY + (((i >> 3) % 5) - 2) * 0.42;
-        const dotRadius = Math.max(0.35, Math.min(0.85, glaze.cellSize * 0.1 + roughness * 0.24));
-        grainCtx.fillStyle = colorWithAlpha(paletteColor.ink, Math.min(0.11, granulation * 0.07));
+        const dotRadius = Math.max(0.25, Math.min(0.58, glaze.cellSize * 0.08 + roughness * 0.18));
+        grainCtx.fillStyle = colorWithAlpha(paletteColor.ink, Math.min(0.045, granulation * 0.032));
         grainCtx.beginPath();
         grainCtx.arc(dotX, dotY, dotRadius, 0, Math.PI * 2);
         grainCtx.fill();
@@ -482,13 +562,24 @@ function createGlazeCanvas(glaze, paletteColor, points = []) {
     }
   }
 
+  renderRunoffLayer(runCtx, glaze, paletteColor);
+
   paintCtx.globalCompositeOperation = 'multiply';
-  paintCtx.filter = `blur(${Math.max(0.6, glaze.cellSize * 0.18)}px)`;
+  paintCtx.filter = `blur(${Math.max(1.4, glaze.cellSize * 0.38)}px)`;
   paintCtx.drawImage(wash, 0, 0);
   paintCtx.filter = 'none';
+  paintCtx.globalAlpha = 0.86;
+  paintCtx.filter = `blur(${Math.max(0.7, glaze.cellSize * 0.2)}px)`;
+  paintCtx.drawImage(runs, 0, 0);
+  paintCtx.filter = 'none';
+  paintCtx.globalAlpha = 1;
+  paintCtx.filter = `blur(${Math.max(1.9, glaze.cellSize * 0.5)}px)`;
   paintCtx.drawImage(pigment, 0, 0);
-  paintCtx.globalAlpha = 0.72;
+  paintCtx.filter = 'none';
+  paintCtx.globalAlpha = 0.35;
+  paintCtx.filter = `blur(${Math.max(0.45, glaze.cellSize * 0.12)}px)`;
   paintCtx.drawImage(grain, 0, 0);
+  paintCtx.filter = 'none';
   paintCtx.globalAlpha = 1;
 
   return paint;
