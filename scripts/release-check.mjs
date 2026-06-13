@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const DEFAULT_LIVE_URL = 'https://basilisk-bat.github.io/watercolor-rider-public/';
 const DEFAULT_PAGES_BASE = '/watercolor-rider-public/';
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const options = {
     liveUrl: null,
     skipLocal: false,
@@ -103,7 +104,7 @@ function withCacheBust(url) {
   return parsed;
 }
 
-function findAsset(html, pattern, label) {
+export function findAsset(html, pattern, label) {
   const match = html.match(pattern);
   if (!match?.[1]) {
     throw new Error(`Could not find ${label} in live HTML`);
@@ -111,7 +112,7 @@ function findAsset(html, pattern, label) {
   return match[1];
 }
 
-function parseHtmlAssets(html, sourceLabel) {
+export function parseHtmlAssets(html, sourceLabel) {
   return {
     scriptPath: findAsset(html, /<script[^>]+src="([^"]*assets\/index-[^"]+\.js)"/, `${sourceLabel} JavaScript asset`),
     stylePath: findAsset(html, /<link[^>]+href="([^"]*assets\/index-[^"]+\.css)"/, `${sourceLabel} CSS asset`),
@@ -119,7 +120,7 @@ function parseHtmlAssets(html, sourceLabel) {
   };
 }
 
-function assertExpectedBase(assetPath, expectedBase, sourceLabel) {
+export function assertExpectedBase(assetPath, expectedBase, sourceLabel) {
   if (!expectedBase || assetPath.startsWith('http')) {
     return;
   }
@@ -129,7 +130,7 @@ function assertExpectedBase(assetPath, expectedBase, sourceLabel) {
   }
 }
 
-function assertAssetsUseExpectedBase(assets, expectedBase, sourceLabel) {
+export function assertAssetsUseExpectedBase(assets, expectedBase, sourceLabel) {
   for (const assetPath of Object.values(assets)) {
     assertExpectedBase(assetPath, expectedBase, sourceLabel);
   }
@@ -195,7 +196,9 @@ async function main() {
   console.log('\nRelease check passed.');
 }
 
-main().catch((error) => {
-  console.error(`\nRelease check failed: ${error.message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`\nRelease check failed: ${error.message}`);
+    process.exitCode = 1;
+  });
+}
