@@ -9,9 +9,10 @@ A cozy minimalist browser toy inspired by line rider: paint soft ink rails, then
 ## Play
 
 - Brush and erase rails directly on the canvas.
-- Ride, pause, reset, undo, or clear from the floating dock.
-- Zoom with the zoom buttons or mouse wheel.
-- Open diagnostics for speed, air time, ink, zoom, wetness, mass, and ride status.
+- Use the floating dock for Menu, Brush, Eraser, and Ride/Pause.
+- Use the menu for Spawn Rider, Reset Rider, Undo, Clear, Diagnostics, and Help.
+- Zoom with mouse wheel, trackpad, or pinch gestures.
+- Open diagnostics for speed, air time, ink, zoom, wetness, pigment mass, runoff, and ride status.
 
 ## Development
 
@@ -28,4 +29,4 @@ npm run build
 npm audit --audit-level=high
 ```
 
-The ride model lives in `src/ridePhysics.js` with focused coverage in `tests/ridePhysics.test.mjs`.
+The Line Rider adapter lives in `src/ridePhysics.js`, with focused coverage in `tests/ridePhysics.test.mjs`. Camera smoothing, track erasing, and watercolor behavior are covered in their matching test files under `tests/`.
