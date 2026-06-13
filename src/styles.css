@@ -202,10 +202,16 @@ button {
   letter-spacing: 0;
 }
 
-#app.menu-open .chrome-shell,
 #app.menu-open .status-strip {
   opacity: 0;
   pointer-events: none;
+}
+
+#app.menu-open .chrome-shell {
+  z-index: 5;
+  opacity: 1 !important;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0) !important;
 }
 
 .corner-brand {
