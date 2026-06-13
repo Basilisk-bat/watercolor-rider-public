@@ -10,6 +10,7 @@ import {
   pointsToLineRiderSegments,
   removeRideTrack,
   resetRide,
+  spawnRider,
   stepRide
 } from '../src/ridePhysics.js';
 
@@ -97,6 +98,24 @@ test('rider exposes Line Rider body points and mounted state', () => {
   assert.ok(world.rider.points.TAIL);
   assert.ok(world.rider.points.PEG);
   assert.ok(world.rider.points.SHOULDER);
+});
+
+test('spawnRider sets the lr-core start position and resets to frame zero', () => {
+  const world = createRideWorld();
+  addRideTrack(world, 'flat', [
+    { x: 0, y: 100 },
+    { x: 400, y: 100 }
+  ]);
+  stepFrames(world, 20);
+
+  const rider = spawnRider(world, { x: 160, y: 80 });
+
+  assert.equal(rider.frame, 0);
+  assert.equal(world.frameIndex, 0);
+  assert.equal(world.startPosition.x, 160);
+  assert.equal(world.startPosition.y, 80);
+  assert.ok(Math.abs(rider.position.x - 168.83) < 0.05);
+  assert.ok(Math.abs(rider.position.y - 79.08) < 0.05);
 });
 
 test('nearest contact and removal update the world track index', () => {

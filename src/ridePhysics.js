@@ -298,6 +298,10 @@ export function resetRide(world, start = world.startPosition, startVelocity = wo
   return world.rider;
 }
 
+export function spawnRider(world, point) {
+  return resetRide(world, point, world.startVelocity);
+}
+
 export function nearestTrackContact(world, point) {
   let nearest = null;
 

@@ -56,6 +56,10 @@ button {
   cursor: cell;
 }
 
+#game.spawn-mode {
+  cursor: copy;
+}
+
 .corner-brand,
 .chrome-shell,
 .debug-drawer,
@@ -153,6 +157,10 @@ button {
   color: #fff8e9;
   border-color: rgba(57, 95, 84, 0.74);
   background: var(--sage-deep);
+}
+
+.menu-action.danger {
+  color: var(--clay);
 }
 
 .menu-action:hover,
@@ -462,7 +470,7 @@ button {
 
   .tools {
     grid-auto-flow: row;
-    grid-template-columns: repeat(5, 40px);
+    grid-template-columns: repeat(4, 40px);
     grid-auto-columns: initial;
     grid-auto-rows: 40px;
     flex: 1 1 auto;
@@ -475,18 +483,14 @@ button {
     height: 40px;
   }
 
-  .debug-toggle {
-    flex: 0 0 40px;
-  }
-
   .status-strip {
     left: 10px;
-    bottom: 112px;
+    bottom: 62px;
   }
 
   .debug-drawer {
     right: 10px;
-    bottom: 106px;
+    bottom: 64px;
     width: calc(100vw - 20px);
   }
 
@@ -521,7 +525,7 @@ button {
   }
 
   .tools {
-    grid-template-columns: repeat(5, 38px);
+    grid-template-columns: repeat(4, 38px);
     grid-auto-rows: 38px;
     gap: 4px;
   }

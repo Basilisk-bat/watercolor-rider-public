@@ -9,13 +9,22 @@ import {
   totalLength
 } from './trackGeometry.js';
 import {
+  createCameraState,
+  focusCameraTarget,
+  screenToWorld as cameraScreenToWorld,
+  setCameraTargetZoom,
+  stepCamera
+} from './cameraControl.js';
+import {
   ENGINE_FPS,
   createRideWorld,
   getRideTelemetry,
   resetRide,
   setRideTracks,
+  spawnRider,
   stepRide
 } from './ridePhysics.js';
+import { aggregateGlazeMetrics, simulateWatercolorStroke } from './watercolorSim.js';
 
 createIcons({ icons });
 
@@ -25,7 +34,7 @@ const ctx = canvas.getContext('2d', { alpha: false });
 const mainMenu = document.querySelector('#mainMenu');
 const menuToggle = document.querySelector('#menuToggle');
 const menuStart = document.querySelector('#menuStart');
-const menuReset = document.querySelector('#menuReset');
+const menuSpawn = document.querySelector('#menuSpawn');
 const menuHelp = document.querySelector('#menuHelp');
 const menuHelpPanel = document.querySelector('#menuHelpPanel');
 const menuClose = document.querySelector('#menuClose');
@@ -33,8 +42,6 @@ const drawTool = document.querySelector('#drawTool');
 const eraseTool = document.querySelector('#eraseTool');
 const playTool = document.querySelector('#playTool');
 const resetTool = document.querySelector('#resetTool');
-const zoomOutTool = document.querySelector('#zoomOutTool');
-const zoomInTool = document.querySelector('#zoomInTool');
 const undoTool = document.querySelector('#undoTool');
 const clearTool = document.querySelector('#clearTool');
 const speedMeter = document.querySelector('#speedMeter');
@@ -46,7 +53,9 @@ const debugDrawer = document.querySelector('#debugDrawer');
 const debugStatus = document.querySelector('[data-diagnostic="status"]');
 const debugZoom = document.querySelector('[data-diagnostic="zoom"]');
 const debugWetness = document.querySelector('[data-diagnostic="wetness"]');
-const debugMass = document.querySelector('[data-diagnostic="mass"]');
+const debugPigment = document.querySelector('[data-diagnostic="pigment"]');
+const debugDeposited = document.querySelector('[data-diagnostic="deposited"]');
+const debugRunoff = document.querySelector('[data-diagnostic="runoff"]');
 
 const CHROME_IDLE_MS = 2200;
 let chromeTimer = null;
@@ -62,10 +71,16 @@ const state = {
   mode: 'draw',
   playing: false,
   pointerDown: false,
+  pointers: new Map(),
+  pinch: null,
   pointer: null,
   currentStroke: [],
   tracks: [],
   history: [],
+  spawn: {
+    active: false,
+    start: null
+  },
   rideWorld: createRideWorld(),
   rider: null,
   paperPattern: null,
@@ -73,13 +88,13 @@ const state = {
   width: 0,
   height: 0,
   seeded: false,
-  camera: {
+  camera: createCameraState({
     x: 0,
     y: 0,
     zoom: 1,
-    minZoom: 0.45,
-    maxZoom: 1.8
-  },
+    minZoom: 0.35,
+    maxZoom: 2.25
+  }),
   metrics: {
     startX: 0,
     bestDistance: 0,
@@ -110,20 +125,29 @@ function record(type, detail = {}) {
   }
 }
 
+function getWatercolorMetrics() {
+  return aggregateGlazeMetrics(state.tracks.map((track) => track.glaze));
+}
+
 function updateDebugDiagnostics() {
   if (debugStatus) {
     debugStatus.textContent = statusStrip.textContent;
   }
   if (debugZoom) {
-    debugZoom.textContent = `${Math.round(state.camera.zoom * 100)}%`;
+    debugZoom.textContent = `${Math.round(state.camera.targetZoom * 100)}%`;
   }
+  const watercolor = getWatercolorMetrics();
   if (debugWetness) {
-    const wetness = state.currentStroke.length > 1 ? 86 : Math.min(72, Math.round(state.tracks.length * 9));
-    debugWetness.textContent = `${wetness}%`;
+    debugWetness.textContent = `${Math.round(watercolor.wetness * 100)}%`;
   }
-  if (debugMass) {
-    const mass = state.tracks.reduce((sum, track) => sum + Math.max(0, track.points.length - 1), 0);
-    debugMass.textContent = String(mass);
+  if (debugPigment) {
+    debugPigment.textContent = watercolor.totalPigmentMass.toFixed(1);
+  }
+  if (debugDeposited) {
+    debugDeposited.textContent = watercolor.depositedPigmentMass.toFixed(1);
+  }
+  if (debugRunoff) {
+    debugRunoff.textContent = String(watercolor.runoffCellCount);
   }
 }
 
@@ -139,11 +163,20 @@ function publishTelemetry() {
   app.dataset.status = statusStrip.textContent;
   app.dataset.debugOpen = String(state.ui.debugOpen);
   app.dataset.menuOpen = String(state.ui.menuOpen);
-  app.dataset.zoom = String(Math.round(state.camera.zoom * 100) / 100);
+  app.dataset.spawn = String(state.spawn.active);
+  app.dataset.zoom = String(Math.round(state.camera.targetZoom * 100) / 100);
+  const watercolor = getWatercolorMetrics();
+  app.dataset.wetness = String(Math.round(watercolor.wetness * 1000) / 1000);
+  app.dataset.pigmentMass = String(Math.round(watercolor.totalPigmentMass * 10) / 10);
+  app.dataset.depositedMass = String(Math.round(watercolor.depositedPigmentMass * 10) / 10);
+  app.dataset.runoff = String(watercolor.runoffCellCount);
   updateDebugDiagnostics();
 }
 
 function modeStatus() {
+  if (state.spawn.active) {
+    return 'spawn';
+  }
   return state.mode === 'draw' ? 'brush' : 'erase';
 }
 
@@ -254,26 +287,53 @@ function screenPoint(event) {
 }
 
 function screenToWorld(point) {
-  return {
-    x: point.x / state.camera.zoom + state.camera.x,
-    y: point.y / state.camera.zoom + state.camera.y
-  };
-}
-
-function worldToScreen(point) {
-  return {
-    x: (point.x - state.camera.x) * state.camera.zoom,
-    y: (point.y - state.camera.y) * state.camera.zoom
-  };
+  return cameraScreenToWorld(state.camera, point);
 }
 
 function setZoom(nextZoom, anchorScreen = { x: state.width / 2, y: state.height / 2 }) {
-  const before = screenToWorld(anchorScreen);
-  state.camera.zoom = Math.min(state.camera.maxZoom, Math.max(state.camera.minZoom, nextZoom));
-  const after = screenToWorld(anchorScreen);
-  state.camera.x += before.x - after.x;
-  state.camera.y += before.y - after.y;
+  setCameraTargetZoom(state.camera, nextZoom, anchorScreen);
   publishTelemetry();
+}
+
+function pinchPoints() {
+  return Array.from(state.pointers.values()).slice(0, 2);
+}
+
+function beginPinchZoom() {
+  const points = pinchPoints();
+  if (points.length < 2) {
+    return;
+  }
+
+  state.pointerDown = false;
+  state.currentStroke = [];
+  state.pinch = {
+    distance: distance(points[0], points[1]),
+    zoom: state.camera.targetZoom,
+    anchor: {
+      x: (points[0].x + points[1].x) / 2,
+      y: (points[0].y + points[1].y) / 2
+    }
+  };
+}
+
+function updatePinchZoom() {
+  if (!state.pinch) {
+    return;
+  }
+
+  const points = pinchPoints();
+  if (points.length < 2) {
+    state.pinch = null;
+    return;
+  }
+
+  const nextDistance = distance(points[0], points[1]);
+  if (state.pinch.distance <= 0) {
+    return;
+  }
+
+  setZoom(state.pinch.zoom * (nextDistance / state.pinch.distance), state.pinch.anchor);
 }
 
 function followRider() {
@@ -281,12 +341,10 @@ function followRider() {
     return;
   }
 
-  const visibleWidth = state.width / state.camera.zoom;
-  const visibleHeight = state.height / state.camera.zoom;
-  const targetX = state.rider.position.x - visibleWidth * 0.38;
-  const targetY = state.rider.position.y - visibleHeight * 0.44;
-  state.camera.x += (targetX - state.camera.x) * 0.08;
-  state.camera.y += (targetY - state.camera.y) * 0.08;
+  focusCameraTarget(state.camera, state.rider.position, {
+    width: state.width,
+    height: state.height
+  });
 }
 
 function seedStarterTrack() {
@@ -307,26 +365,56 @@ function seedStarterTrack() {
   resetRider();
 }
 
-function buildWatercolorLayers(points, seed) {
-  const layers = [];
-  const random = mulberry32(seed);
-
-  for (let layer = 0; layer < 18; layer += 1) {
-    const spread = 2.2 + layer * 1.75;
-    const edgeBias = layer / 17;
-    layers.push({
-      points: points.map((point) => ({
-        x: point.x + (random() - 0.5) * spread,
-        y: point.y + (random() - 0.5) * spread
-      })),
-      alpha: 0.18 - edgeBias * 0.12,
-      widthBoost: 16 - layer * 0.52,
-      blur: layer < 9 ? 0.35 + edgeBias * 1.8 : 0,
-      composite: layer < 11 ? 'multiply' : 'source-over'
-    });
+function colorWithAlpha(color, alpha) {
+  const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (!match) {
+    return color;
   }
 
-  return layers;
+  return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha})`;
+}
+
+function createGlazeCanvas(glaze, paletteColor) {
+  const paint = document.createElement('canvas');
+  const paintCtx = paint.getContext('2d');
+  paint.width = Math.max(1, Math.ceil(glaze.bounds.width));
+  paint.height = Math.max(1, Math.ceil(glaze.bounds.height));
+  paintCtx.clearRect(0, 0, paint.width, paint.height);
+  paintCtx.globalCompositeOperation = 'multiply';
+
+  for (let y = 0; y < glaze.height; y += 1) {
+    for (let x = 0; x < glaze.width; x += 1) {
+      const i = y * glaze.width + x;
+      const deposited = glaze.deposited[i];
+      const wet = glaze.wetMask[i] > 0;
+
+      if (deposited <= 0.002 && !wet) {
+        continue;
+      }
+
+      const px = x * glaze.cellSize;
+      const py = y * glaze.cellSize;
+      const roughness = 1 - glaze.paperHeight[i];
+      const edge = glaze.edge[i] ?? 0;
+      const granulation = glaze.granulation[i] ?? 0;
+      const washAlpha = Math.min(0.26, deposited * 0.12 + (wet ? 0.014 : 0));
+
+      paintCtx.fillStyle = colorWithAlpha(paletteColor.wash, washAlpha);
+      paintCtx.fillRect(px - 1, py - 1, glaze.cellSize + 2, glaze.cellSize + 2);
+
+      if (edge > 0.002) {
+        paintCtx.fillStyle = colorWithAlpha(paletteColor.ink, Math.min(0.34, edge * 0.24));
+        paintCtx.fillRect(px, py, glaze.cellSize, glaze.cellSize);
+      }
+
+      if (granulation > 0.006 && roughness > 0.42) {
+        paintCtx.fillStyle = colorWithAlpha(paletteColor.ink, Math.min(0.28, granulation * 0.18));
+        paintCtx.fillRect(px + (i % 3), py + ((i >> 2) % 3), 1.4, 1.4);
+      }
+    }
+  }
+
+  return paint;
 }
 
 function syncRideWorld() {
@@ -345,12 +433,21 @@ function createTrack(rawPoints, options = {}) {
 
   const id = crypto.randomUUID ? crypto.randomUUID() : `track-${Date.now()}-${state.tracks.length}`;
   const paletteIndex = state.tracks.length % palette.length;
+  const seed = paletteIndex * 997 + state.tracks.length * 251 + 17;
+  const glaze = simulateWatercolorStroke(points, {
+    seed,
+    thickness: starter ? 12 : 10,
+    water: starter ? 1.25 : 1.05,
+    pigment: starter ? 0.96 : 1.08,
+    steps: starter ? 42 : 36
+  });
   const track = {
     id,
     points,
     thickness: starter ? 12 : 10,
     palette: palette[paletteIndex],
-    layers: buildWatercolorLayers(points, paletteIndex * 997 + state.tracks.length * 251 + 17)
+    glaze,
+    glazeCanvas: null
   };
 
   return track;
@@ -400,11 +497,13 @@ function updateInkMetric() {
 }
 
 function setMode(mode) {
+  state.spawn.active = false;
   state.mode = mode;
   state.currentStroke = [];
   drawTool.classList.toggle('active', mode === 'draw');
   eraseTool.classList.toggle('active', mode === 'erase');
   canvas.classList.toggle('erase-mode', mode === 'erase');
+  canvas.classList.remove('spawn-mode');
   setStatus(modeStatus());
   record('mode', { mode });
 }
@@ -422,8 +521,9 @@ function setPlaying(playing) {
 
 function resetRider() {
   const startTrack = state.tracks[0];
-  const start = startTrack?.points[0] ?? { x: state.width * 0.12, y: state.height * 0.28 };
-  state.rider = resetRide(state.rideWorld, { x: start.x + 1, y: start.y - 5 });
+  const start = state.spawn.start ?? startTrack?.points[0] ?? { x: state.width * 0.12, y: state.height * 0.28 };
+  const spawnOffset = state.spawn.start ? { x: 0, y: 0 } : { x: 1, y: -5 };
+  state.rider = resetRide(state.rideWorld, { x: start.x + spawnOffset.x, y: start.y + spawnOffset.y });
   state.metrics.startX = state.rider.position.x;
   state.metrics.bestDistance = 0;
   state.metrics.currentAir = 0;
@@ -434,6 +534,34 @@ function resetRider() {
   airMeter.textContent = '0.0s air';
   record('reset', { x: Math.round(state.rider.position.x), y: Math.round(state.rider.position.y) });
   publishTelemetry();
+}
+
+function setSpawnMode(active) {
+  state.spawn.active = active;
+  state.currentStroke = [];
+  canvas.classList.toggle('spawn-mode', active);
+  canvas.classList.toggle('erase-mode', !active && state.mode === 'erase');
+  setPlaying(false);
+  setStatus(modeStatus());
+  record(active ? 'spawn-armed' : 'spawn-cancelled');
+}
+
+function spawnAt(point) {
+  state.spawn.start = { ...point };
+  state.spawn.active = false;
+  canvas.classList.remove('spawn-mode');
+  state.rider = spawnRider(state.rideWorld, point);
+  state.metrics.startX = state.rider.position.x;
+  state.metrics.bestDistance = 0;
+  state.metrics.currentAir = 0;
+  state.metrics.longestAir = 0;
+  state.metrics.topSpeed = 0;
+  speedMeter.textContent = '0.0 px/s';
+  airMeter.textContent = '0.0s air';
+  setStatus(modeStatus());
+  record('spawn', { x: Math.round(point.x), y: Math.round(point.y) });
+  publishTelemetry();
+  return state.rider;
 }
 
 function eraseAt(point) {
@@ -567,31 +695,25 @@ function renderTrack(track) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  ctx.shadowColor = track.palette.wash;
-  ctx.shadowBlur = 18;
-  track.layers.forEach((layer, index) => {
-    ctx.globalCompositeOperation = layer.composite;
-    ctx.strokeStyle = index < 13 ? track.palette.wash : track.palette.ink;
-    ctx.globalAlpha = Math.max(0.035, layer.alpha);
-    ctx.lineWidth = track.thickness + layer.widthBoost;
-    ctx.filter = layer.blur > 0 ? `blur(${layer.blur}px)` : 'none';
-    drawPath(layer.points);
-    ctx.stroke();
-  });
+  if (!track.glazeCanvas) {
+    track.glazeCanvas = createGlazeCanvas(track.glaze, track.palette);
+  }
 
-  ctx.filter = 'none';
-  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(track.glazeCanvas, track.glaze.bounds.x, track.glaze.bounds.y);
+
+  ctx.globalCompositeOperation = 'multiply';
   ctx.globalAlpha = 0.18;
-  ctx.strokeStyle = 'rgba(255, 250, 235, 0.72)';
-  ctx.lineWidth = Math.max(8, track.thickness * 0.86);
+  ctx.strokeStyle = track.palette.ink;
+  ctx.lineWidth = Math.max(1.5, track.thickness * 0.18);
   drawPath(track.points);
   ctx.stroke();
 
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.globalAlpha = 0.28;
-  ctx.strokeStyle = track.palette.ink;
-  ctx.lineWidth = Math.max(1.8, track.thickness * 0.2);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 0.1;
+  ctx.strokeStyle = 'rgba(255, 250, 235, 0.75)';
+  ctx.lineWidth = Math.max(5, track.thickness * 0.52);
   drawPath(track.points);
   ctx.stroke();
   ctx.restore();
@@ -637,9 +759,9 @@ function renderRider() {
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.shadowColor = 'rgba(52, 43, 34, 0.24)';
-  ctx.shadowBlur = 8;
-  ctx.shadowOffsetY = 3;
+  ctx.shadowColor = 'rgba(52, 43, 34, 0.14)';
+  ctx.shadowBlur = 3;
+  ctx.shadowOffsetY = 1;
 
   strokeBetween(points.TAIL, points.NOSE, 'rgba(79, 55, 47, 0.8)', 2.2);
   strokeBetween(points.PEG, points.STRING, 'rgba(79, 55, 47, 0.72)', 1.7);
@@ -699,16 +821,14 @@ function renderCurrentStroke() {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.strokeStyle = 'rgba(64, 132, 154, 0.18)';
-  ctx.lineWidth = 24;
-  ctx.globalAlpha = 0.5;
-  ctx.filter = 'blur(1.2px)';
+  ctx.lineWidth = 22;
+  ctx.globalAlpha = 0.38;
   drawPath(state.currentStroke);
   ctx.stroke();
 
-  ctx.filter = 'none';
-  ctx.globalAlpha = 0.28;
+  ctx.globalAlpha = 0.24;
   ctx.strokeStyle = 'rgba(36, 72, 96, 0.72)';
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 2.2;
   drawPath(state.currentStroke);
   ctx.stroke();
   ctx.restore();
@@ -765,6 +885,7 @@ function renderBackground() {
 
 function render() {
   followRider();
+  stepCamera(state.camera);
   renderBackground();
   ctx.setTransform(
     state.dpr * state.camera.zoom,
@@ -785,9 +906,23 @@ function render() {
 function onPointerDown(event) {
   canvas.focus({ preventScroll: true });
   canvas.setPointerCapture(event.pointerId);
-  const point = screenToWorld(screenPoint(event));
+  const screen = screenPoint(event);
+  state.pointers.set(event.pointerId, screen);
+
+  if (event.pointerType === 'touch' && state.pointers.size >= 2) {
+    beginPinchZoom();
+    return;
+  }
+
+  const point = screenToWorld(screen);
   state.pointerDown = true;
   state.pointer = point;
+
+  if (state.spawn.active) {
+    state.pointerDown = false;
+    spawnAt(point);
+    return;
+  }
 
   if (state.mode === 'erase') {
     eraseAt(point);
@@ -798,7 +933,17 @@ function onPointerDown(event) {
 }
 
 function onPointerMove(event) {
-  const point = screenToWorld(screenPoint(event));
+  const screen = screenPoint(event);
+  if (state.pointers.has(event.pointerId)) {
+    state.pointers.set(event.pointerId, screen);
+  }
+
+  if (state.pinch) {
+    updatePinchZoom();
+    return;
+  }
+
+  const point = screenToWorld(screen);
   state.pointer = point;
 
   if (!state.pointerDown) {
@@ -820,6 +965,17 @@ function onPointerUp(event) {
   if (canvas.hasPointerCapture(event.pointerId)) {
     canvas.releasePointerCapture(event.pointerId);
   }
+  state.pointers.delete(event.pointerId);
+
+  if (state.pinch) {
+    if (state.pointers.size < 2) {
+      state.pinch = null;
+    }
+    state.pointerDown = false;
+    state.currentStroke = [];
+    return;
+  }
+
   state.pointerDown = false;
 
   if (state.mode === 'draw' && state.currentStroke.length > 1) {
@@ -896,7 +1052,11 @@ menuStart.addEventListener('click', () => {
   setMenuOpen(false);
   setPlaying(true);
 });
-menuReset.addEventListener('click', () => {
+menuSpawn.addEventListener('click', () => {
+  setMenuOpen(false);
+  setSpawnMode(true);
+});
+resetTool.addEventListener('click', () => {
   setPlaying(false);
   resetRider();
   setStatus(modeStatus());
@@ -909,16 +1069,18 @@ menuHelp.addEventListener('click', () => {
   revealChrome();
 });
 menuClose.addEventListener('click', () => setMenuOpen(false));
-resetTool.addEventListener('click', () => {
-  setPlaying(false);
-  resetRider();
-  setStatus(modeStatus());
+undoTool.addEventListener('click', () => {
+  undoStroke();
+  setMenuOpen(false);
 });
-zoomOutTool.addEventListener('click', () => setZoom(state.camera.zoom / 1.18));
-zoomInTool.addEventListener('click', () => setZoom(state.camera.zoom * 1.18));
-undoTool.addEventListener('click', undoStroke);
-clearTool.addEventListener('click', clearCanvas);
-debugToggle.addEventListener('click', () => setDebugOpen(!state.ui.debugOpen));
+clearTool.addEventListener('click', () => {
+  clearCanvas();
+  setMenuOpen(false);
+});
+debugToggle.addEventListener('click', () => {
+  setMenuOpen(false);
+  setDebugOpen(!state.ui.debugOpen);
+});
 canvas.addEventListener('pointerdown', onPointerDown);
 canvas.addEventListener('pointermove', onPointerMove);
 canvas.addEventListener('pointerup', onPointerUp);
@@ -929,7 +1091,7 @@ canvas.addEventListener(
     event.preventDefault();
     const point = screenPoint(event);
     const factor = Math.exp(-event.deltaY * 0.0012);
-    setZoom(state.camera.zoom * factor, point);
+    setZoom(state.camera.targetZoom * factor, point);
   },
   { passive: false }
 );
@@ -937,7 +1099,35 @@ app.addEventListener('pointermove', revealChrome);
 app.addEventListener('pointerdown', revealChrome);
 app.addEventListener('touchstart', revealChrome, { passive: true });
 app.addEventListener('focusin', revealChrome);
-window.addEventListener('keydown', revealChrome);
+window.addEventListener('keydown', (event) => {
+  revealChrome();
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+    event.preventDefault();
+    undoStroke();
+    return;
+  }
+
+  if (event.code === 'Space' && !event.target?.closest?.('button')) {
+    event.preventDefault();
+    setPlaying(!state.playing);
+    return;
+  }
+
+  if (event.key === 'Escape') {
+    if (state.spawn.active) {
+      setSpawnMode(false);
+      return;
+    }
+    if (state.ui.debugOpen) {
+      setDebugOpen(false);
+      return;
+    }
+    if (state.ui.menuOpen) {
+      setMenuOpen(false);
+    }
+  }
+});
 window.addEventListener('resize', resize);
 
 window.RPK_RIDER = {
@@ -947,13 +1137,16 @@ window.RPK_RIDER = {
   clear: clearCanvas,
   addTrack,
   eraseAt,
+  spawnAt,
   getState: () => ({
     mode: state.mode,
     playing: state.playing,
+    spawn: { ...state.spawn },
     tracks: state.tracks.map((track) => ({
       id: track.id,
       points: track.points.length,
-      length: totalLength(track.points)
+      length: totalLength(track.points),
+      watercolor: { ...track.glaze.metrics }
     })),
     rider: state.rider
       ? {
@@ -969,6 +1162,7 @@ window.RPK_RIDER = {
       : null,
     metrics: { ...state.metrics },
     camera: { ...state.camera },
+    watercolor: getWatercolorMetrics(),
     engine: {
       fps: ENGINE_FPS,
       lines: state.rideWorld.lines.length
