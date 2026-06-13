@@ -373,13 +373,74 @@ function colorWithAlpha(color, alpha) {
   return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha})`;
 }
 
-function createGlazeCanvas(glaze, paletteColor) {
+function tracePath(targetCtx, points, offsetX = 0, offsetY = 0) {
+  if (points.length < 2) {
+    return;
+  }
+
+  targetCtx.beginPath();
+  targetCtx.moveTo(points[0].x + offsetX, points[0].y + offsetY);
+  for (let i = 1; i < points.length; i += 1) {
+    const current = points[i];
+    const previous = points[i - 1];
+    const mid = {
+      x: (previous.x + current.x) / 2,
+      y: (previous.y + current.y) / 2
+    };
+    targetCtx.quadraticCurveTo(previous.x + offsetX, previous.y + offsetY, mid.x + offsetX, mid.y + offsetY);
+  }
+  const last = points[points.length - 1];
+  targetCtx.lineTo(last.x + offsetX, last.y + offsetY);
+}
+
+function createLayerCanvas(width, height) {
+  const layer = document.createElement('canvas');
+  layer.width = width;
+  layer.height = height;
+  return layer;
+}
+
+function fillSoftDot(targetCtx, x, y, radius, color, alpha) {
+  targetCtx.fillStyle = colorWithAlpha(color, alpha);
+  targetCtx.beginPath();
+  targetCtx.arc(x, y, radius, 0, Math.PI * 2);
+  targetCtx.fill();
+}
+
+function createGlazeCanvas(glaze, paletteColor, points = []) {
   const paint = document.createElement('canvas');
   const paintCtx = paint.getContext('2d');
   paint.width = Math.max(1, Math.ceil(glaze.bounds.width));
   paint.height = Math.max(1, Math.ceil(glaze.bounds.height));
   paintCtx.clearRect(0, 0, paint.width, paint.height);
-  paintCtx.globalCompositeOperation = 'multiply';
+
+  const wash = createLayerCanvas(paint.width, paint.height);
+  const washCtx = wash.getContext('2d');
+  const pigment = createLayerCanvas(paint.width, paint.height);
+  const pigmentCtx = pigment.getContext('2d');
+  const grain = createLayerCanvas(paint.width, paint.height);
+  const grainCtx = grain.getContext('2d');
+
+  washCtx.lineCap = 'round';
+  washCtx.lineJoin = 'round';
+
+  if (points.length > 1) {
+    const offsetX = -glaze.bounds.x;
+    const offsetY = -glaze.bounds.y;
+
+    // Cached blur keeps the watercolor wash continuous without per-frame filter cost.
+    washCtx.filter = `blur(${Math.max(2.4, glaze.cellSize * 0.72)}px)`;
+    washCtx.strokeStyle = colorWithAlpha(paletteColor.wash, 0.18);
+    washCtx.lineWidth = Math.max(16, glaze.cellSize * 5.2);
+    tracePath(washCtx, points, offsetX, offsetY);
+    washCtx.stroke();
+    washCtx.filter = 'none';
+
+    washCtx.strokeStyle = colorWithAlpha(paletteColor.wash, 0.12);
+    washCtx.lineWidth = Math.max(9, glaze.cellSize * 2.8);
+    tracePath(washCtx, points, offsetX, offsetY);
+    washCtx.stroke();
+  }
 
   for (let y = 0; y < glaze.height; y += 1) {
     for (let x = 0; x < glaze.width; x += 1) {
@@ -396,22 +457,39 @@ function createGlazeCanvas(glaze, paletteColor) {
       const roughness = 1 - glaze.paperHeight[i];
       const edge = glaze.edge[i] ?? 0;
       const granulation = glaze.granulation[i] ?? 0;
-      const washAlpha = Math.min(0.26, deposited * 0.12 + (wet ? 0.014 : 0));
+      const centerX = px + glaze.cellSize * 0.5;
+      const centerY = py + glaze.cellSize * 0.5;
+      const washAlpha = Math.min(0.055, deposited * 0.018 + (wet ? 0.004 : 0));
+      const washRadius = glaze.cellSize * (wet ? 1.05 : 0.85) + Math.min(1.2, deposited * 0.38);
 
-      paintCtx.fillStyle = colorWithAlpha(paletteColor.wash, washAlpha);
-      paintCtx.fillRect(px - 1, py - 1, glaze.cellSize + 2, glaze.cellSize + 2);
+      fillSoftDot(washCtx, centerX, centerY, washRadius, paletteColor.wash, washAlpha);
 
       if (edge > 0.002) {
-        paintCtx.fillStyle = colorWithAlpha(paletteColor.ink, Math.min(0.34, edge * 0.24));
-        paintCtx.fillRect(px, py, glaze.cellSize, glaze.cellSize);
+        const edgeAlpha = Math.min(0.07, edge * 0.045);
+        const edgeRadius = glaze.cellSize * 0.58 + Math.min(1.2, edge * 0.24);
+        fillSoftDot(pigmentCtx, centerX, centerY, edgeRadius, paletteColor.ink, edgeAlpha);
       }
 
       if (granulation > 0.006 && roughness > 0.42) {
-        paintCtx.fillStyle = colorWithAlpha(paletteColor.ink, Math.min(0.28, granulation * 0.18));
-        paintCtx.fillRect(px + (i % 3), py + ((i >> 2) % 3), 1.4, 1.4);
+        const dotX = centerX + ((i % 5) - 2) * 0.42;
+        const dotY = centerY + (((i >> 3) % 5) - 2) * 0.42;
+        const dotRadius = Math.max(0.35, Math.min(0.85, glaze.cellSize * 0.1 + roughness * 0.24));
+        grainCtx.fillStyle = colorWithAlpha(paletteColor.ink, Math.min(0.11, granulation * 0.07));
+        grainCtx.beginPath();
+        grainCtx.arc(dotX, dotY, dotRadius, 0, Math.PI * 2);
+        grainCtx.fill();
       }
     }
   }
+
+  paintCtx.globalCompositeOperation = 'multiply';
+  paintCtx.filter = `blur(${Math.max(0.6, glaze.cellSize * 0.18)}px)`;
+  paintCtx.drawImage(wash, 0, 0);
+  paintCtx.filter = 'none';
+  paintCtx.drawImage(pigment, 0, 0);
+  paintCtx.globalAlpha = 0.72;
+  paintCtx.drawImage(grain, 0, 0);
+  paintCtx.globalAlpha = 1;
 
   return paint;
 }
@@ -670,23 +748,7 @@ function updateMetrics(deltaMs) {
 }
 
 function drawPath(points) {
-  if (points.length < 2) {
-    return;
-  }
-
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i += 1) {
-    const current = points[i];
-    const previous = points[i - 1];
-    const mid = {
-      x: (previous.x + current.x) / 2,
-      y: (previous.y + current.y) / 2
-    };
-    ctx.quadraticCurveTo(previous.x, previous.y, mid.x, mid.y);
-  }
-  const last = points[points.length - 1];
-  ctx.lineTo(last.x, last.y);
+  tracePath(ctx, points);
 }
 
 function renderTrack(track) {
@@ -695,7 +757,7 @@ function renderTrack(track) {
   ctx.lineJoin = 'round';
 
   if (!track.glazeCanvas) {
-    track.glazeCanvas = createGlazeCanvas(track.glaze, track.palette);
+    track.glazeCanvas = createGlazeCanvas(track.glaze, track.palette, track.points);
   }
 
   ctx.globalAlpha = 1;
