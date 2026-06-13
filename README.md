@@ -27,6 +27,8 @@ npm run dev
 npm run test
 npm run build
 npm audit --audit-level=high
+npm run release:check
+npm run release:check -- --live
 ```
 
 The Line Rider adapter lives in `src/ridePhysics.js`, with focused coverage in `tests/ridePhysics.test.mjs`. Camera smoothing, track erasing, and watercolor behavior are covered in their matching test files under `tests/`.
