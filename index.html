@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Watercolor Rider</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game" aria-label="Watercolor Rider playfield" tabindex="-1"></canvas>
+
+      <section class="main-menu" id="mainMenu" aria-label="Main menu" aria-hidden="false">
+        <div class="menu-panel">
+          <button class="tool menu-close" id="menuClose" type="button" aria-label="Close menu" title="Close menu">
+            <i data-lucide="x"></i>
+          </button>
+          <div class="menu-brand">
+            <span class="brand-mark"></span>
+            <h1>Watercolor Rider</h1>
+          </div>
+          <div class="menu-actions" aria-label="Menu actions">
+            <button class="menu-action primary-action" id="menuStart" type="button">
+              <i data-lucide="play"></i>
+              <span>Ride</span>
+            </button>
+            <button class="menu-action" id="menuBrush" type="button">
+              <i data-lucide="pen-line"></i>
+              <span>Brush</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <header class="corner-brand" aria-label="Game title">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <span>Watercolor Rider</span>
+        </div>
+      </header>
+
+      <div class="chrome-shell" aria-label="Game controls">
+        <nav class="tools" aria-label="Tools">
+          <button class="tool" id="menuToggle" type="button" aria-label="Menu" aria-expanded="true" title="Menu">
+            <i data-lucide="menu"></i>
+          </button>
+          <button class="tool active" id="drawTool" type="button" aria-label="Brush" title="Brush">
+            <i data-lucide="pen-line"></i>
+          </button>
+          <button class="tool" id="eraseTool" type="button" aria-label="Eraser" title="Eraser">
+            <i data-lucide="eraser"></i>
+          </button>
+          <button class="tool primary" id="playTool" type="button" aria-label="Ride" title="Ride">
+            <i data-lucide="play"></i>
+          </button>
+          <button class="tool" id="resetTool" type="button" aria-label="Reset rider" title="Reset rider">
+            <i data-lucide="rotate-ccw"></i>
+          </button>
+          <button class="tool" id="zoomOutTool" type="button" aria-label="Zoom out" title="Zoom out">
+            <i data-lucide="zoom-out"></i>
+          </button>
+          <button class="tool" id="zoomInTool" type="button" aria-label="Zoom in" title="Zoom in">
+            <i data-lucide="zoom-in"></i>
+          </button>
+          <button class="tool" id="undoTool" type="button" aria-label="Undo stroke" title="Undo stroke">
+            <i data-lucide="undo-2"></i>
+          </button>
+          <button class="tool danger" id="clearTool" type="button" aria-label="Clear canvas" title="Clear canvas">
+            <i data-lucide="trash-2"></i>
+          </button>
+        </nav>
+
+        <button
+          class="tool debug-toggle"
+          id="debugToggle"
+          type="button"
+          aria-label="Diagnostics"
+          aria-expanded="false"
+          aria-controls="debugDrawer"
+          title="Diagnostics"
+        >
+          <i data-lucide="sliders-horizontal"></i>
+        </button>
+      </div>
+
+      <aside class="debug-drawer" id="debugDrawer" aria-label="Diagnostics" aria-hidden="true">
+        <div class="debug-title">Diagnostics</div>
+        <dl class="meters" aria-label="Ride metrics">
+          <div>
+            <dt>speed</dt>
+            <dd id="speedMeter">0.0 px/s</dd>
+          </div>
+          <div>
+            <dt>air</dt>
+            <dd id="airMeter">0.0s air</dd>
+          </div>
+          <div>
+            <dt>ink</dt>
+            <dd id="inkMeter">0m ink</dd>
+          </div>
+          <div>
+            <dt>status</dt>
+            <dd data-diagnostic="status">brush</dd>
+          </div>
+          <div>
+            <dt>zoom</dt>
+            <dd data-diagnostic="zoom">100%</dd>
+          </div>
+          <div>
+            <dt>wet</dt>
+            <dd data-diagnostic="wetness">0%</dd>
+          </div>
+          <div>
+            <dt>mass</dt>
+            <dd data-diagnostic="mass">0</dd>
+          </div>
+        </dl>
+      </aside>
+
+      <div class="status-strip" id="statusStrip" role="status">brush</div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
