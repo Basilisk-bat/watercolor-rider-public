@@ -4,11 +4,14 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const DEFAULT_LIVE_URL = 'https://basilisk-bat.github.io/watercolor-rider-public/';
+const DEFAULT_PAGES_BASE = '/watercolor-rider-public/';
 
 function parseArgs(argv) {
   const options = {
     liveUrl: null,
-    skipLocal: false
+    skipLocal: false,
+    buildBase: null,
+    expectedBase: null
   };
 
   for (const arg of argv) {
@@ -16,6 +19,15 @@ function parseArgs(argv) {
       options.liveUrl = DEFAULT_LIVE_URL;
     } else if (arg.startsWith('--live=')) {
       options.liveUrl = arg.slice('--live='.length) || DEFAULT_LIVE_URL;
+    } else if (arg === '--pages') {
+      options.liveUrl = DEFAULT_LIVE_URL;
+      options.buildBase = DEFAULT_PAGES_BASE;
+      options.expectedBase = DEFAULT_PAGES_BASE;
+    } else if (arg.startsWith('--build-base=')) {
+      options.buildBase = arg.slice('--build-base='.length);
+      options.expectedBase ??= options.buildBase;
+    } else if (arg.startsWith('--expected-base=')) {
+      options.expectedBase = arg.slice('--expected-base='.length);
     } else if (arg === '--skip-local') {
       options.skipLocal = true;
     } else {
@@ -99,6 +111,30 @@ function findAsset(html, pattern, label) {
   return match[1];
 }
 
+function parseHtmlAssets(html, sourceLabel) {
+  return {
+    scriptPath: findAsset(html, /<script[^>]+src="([^"]*assets\/index-[^"]+\.js)"/, `${sourceLabel} JavaScript asset`),
+    stylePath: findAsset(html, /<link[^>]+href="([^"]*assets\/index-[^"]+\.css)"/, `${sourceLabel} CSS asset`),
+    faviconPath: findAsset(html, /<link[^>]+href="([^"]*favicon\.svg)"/, `${sourceLabel} favicon`)
+  };
+}
+
+function assertExpectedBase(assetPath, expectedBase, sourceLabel) {
+  if (!expectedBase || assetPath.startsWith('http')) {
+    return;
+  }
+
+  if (!assetPath.startsWith(expectedBase)) {
+    throw new Error(`${sourceLabel} asset ${assetPath} does not use expected base ${expectedBase}`);
+  }
+}
+
+function assertAssetsUseExpectedBase(assets, expectedBase, sourceLabel) {
+  for (const assetPath of Object.values(assets)) {
+    assertExpectedBase(assetPath, expectedBase, sourceLabel);
+  }
+}
+
 async function compareLiveAsset(liveBase, assetPath, localPath) {
   const remoteUrl = new URL(assetPath, liveBase);
   const remoteHash = hashBuffer(await fetchBytes(remoteUrl));
@@ -111,12 +147,24 @@ async function compareLiveAsset(liveBase, assetPath, localPath) {
   return { assetPath, remoteUrl: remoteUrl.href, hash: remoteHash };
 }
 
-async function checkLive(url) {
+async function checkLocalHtml(expectedBase) {
+  if (!expectedBase) {
+    return null;
+  }
+
+  const html = await readFile(path.join('dist', 'index.html'), 'utf8');
+  const assets = parseHtmlAssets(html, 'local dist');
+  assertAssetsUseExpectedBase(assets, expectedBase, 'local dist');
+
+  console.log(`\nLocal dist index uses expected base ${expectedBase}`);
+  return assets;
+}
+
+async function checkLive(url, expectedBase) {
   const liveBase = new URL(url);
   const html = (await fetchBytes(withCacheBust(liveBase))).toString('utf8');
-  const scriptPath = findAsset(html, /<script[^>]+src="([^"]*assets\/index-[^"]+\.js)"/, 'JavaScript asset');
-  const stylePath = findAsset(html, /<link[^>]+href="([^"]*assets\/index-[^"]+\.css)"/, 'CSS asset');
-  const faviconPath = findAsset(html, /<link[^>]+href="([^"]*favicon\.svg)"/, 'favicon');
+  const { scriptPath, stylePath, faviconPath } = parseHtmlAssets(html, 'live');
+  assertAssetsUseExpectedBase({ scriptPath, stylePath, faviconPath }, expectedBase, 'live');
   const checks = [
     await compareLiveAsset(liveBase, scriptPath, path.join('dist', 'assets', path.basename(scriptPath))),
     await compareLiveAsset(liveBase, stylePath, path.join('dist', 'assets', path.basename(stylePath))),
@@ -134,13 +182,14 @@ async function main() {
 
   if (!options.skipLocal) {
     runNpm(['run', 'test']);
-    runNpm(['run', 'build']);
+    runNpm(options.buildBase ? ['run', 'build', '--', '--base', options.buildBase] : ['run', 'build']);
     runNpm(['audit', '--audit-level=high']);
     runNpm(['audit', '--omit=dev']);
+    await checkLocalHtml(options.expectedBase);
   }
 
   if (options.liveUrl) {
-    await checkLive(options.liveUrl);
+    await checkLive(options.liveUrl, options.expectedBase);
   }
 
   console.log('\nRelease check passed.');
