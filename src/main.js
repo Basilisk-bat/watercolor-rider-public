@@ -33,7 +33,6 @@ const app = document.querySelector('#app');
 const ctx = canvas.getContext('2d', { alpha: false });
 const mainMenu = document.querySelector('#mainMenu');
 const menuToggle = document.querySelector('#menuToggle');
-const menuStart = document.querySelector('#menuStart');
 const menuSpawn = document.querySelector('#menuSpawn');
 const menuHelp = document.querySelector('#menuHelp');
 const menuHelpPanel = document.querySelector('#menuHelpPanel');
@@ -1048,10 +1047,6 @@ drawTool.addEventListener('click', () => setMode('draw'));
 eraseTool.addEventListener('click', () => setMode('erase'));
 playTool.addEventListener('click', () => setPlaying(!state.playing));
 menuToggle.addEventListener('click', () => setMenuOpen(!state.ui.menuOpen));
-menuStart.addEventListener('click', () => {
-  setMenuOpen(false);
-  setPlaying(true);
-});
 menuSpawn.addEventListener('click', () => {
   setMenuOpen(false);
   setSpawnMode(true);
