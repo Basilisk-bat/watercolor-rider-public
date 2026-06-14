@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/watercolor-rider-public/favicon.svg" />
     <title>Watercolor Rider</title>
-    <script type="module" crossorigin src="/watercolor-rider-public/assets/index-D2NwMCMO.js"></script>
-    <link rel="stylesheet" crossorigin href="/watercolor-rider-public/assets/index-CW48OQiz.css">
+    <script type="module" crossorigin src="/watercolor-rider-public/assets/index-DVVN7zqc.js"></script>
+    <link rel="stylesheet" crossorigin href="/watercolor-rider-public/assets/index-aG5jn3s7.css">
   </head>
   <body>
     <div id="app">
@@ -56,7 +56,7 @@
             </button>
           </div>
           <div class="menu-help" id="menuHelpPanel" hidden>
-            <p>Brush draws rails. Eraser cuts rails. Spawn Rider sets the start point. Space rides or pauses.</p>
+            <p>Choose Watercolor, Pencil, or Marker to draw rails. Eraser cuts rails. Spawn, Reset, and Ride use the on-screen controls.</p>
           </div>
         </div>
       </section>
@@ -73,10 +73,44 @@
           <button class="tool" id="menuToggle" type="button" aria-label="Menu" aria-expanded="true" title="Menu">
             <i data-lucide="menu"></i>
           </button>
-          <button class="tool active" id="drawTool" type="button" aria-label="Brush" title="Brush">
-            <i data-lucide="pen-line"></i>
+          <button
+            class="tool active"
+            id="watercolorTool"
+            type="button"
+            aria-label="Watercolor"
+            aria-pressed="true"
+            title="Watercolor"
+          >
+            <i data-lucide="paintbrush"></i>
           </button>
-          <button class="tool" id="eraseTool" type="button" aria-label="Eraser" title="Eraser">
+          <button
+            class="tool"
+            id="pencilTool"
+            type="button"
+            aria-label="Pencil"
+            aria-pressed="false"
+            title="Pencil"
+          >
+            <i data-lucide="pencil"></i>
+          </button>
+          <button
+            class="tool"
+            id="markerTool"
+            type="button"
+            aria-label="Marker"
+            aria-pressed="false"
+            title="Marker"
+          >
+            <i data-lucide="highlighter"></i>
+          </button>
+          <button
+            class="tool"
+            id="eraseTool"
+            type="button"
+            aria-label="Eraser"
+            aria-pressed="false"
+            title="Eraser"
+          >
             <i data-lucide="eraser"></i>
           </button>
           <button class="tool primary" id="playTool" type="button" aria-label="Ride" title="Ride">
