@@ -273,7 +273,7 @@ button {
   box-shadow:
     0 16px 32px rgba(64, 48, 34, 0.16),
     inset 0 1px 0 rgba(255, 253, 245, 0.7);
-  opacity: 0.12;
+  opacity: 0.52;
   transform: translateX(-50%) translateY(9px);
   transition: none;
   backdrop-filter: blur(10px);
@@ -365,6 +365,9 @@ button {
   right: 16px;
   bottom: 78px;
   width: min(268px, calc(100vw - 32px));
+  max-height: min(62vh, 430px);
+  overflow: auto;
+  scrollbar-gutter: stable;
   padding: 12px;
   border: 1px solid rgba(91, 122, 104, 0.22);
   border-radius: 8px;
@@ -469,7 +472,7 @@ button {
 
   .chrome-shell {
     bottom: 10px;
-    width: calc(100vw - 20px);
+    width: auto;
     justify-content: center;
     align-items: center;
   }
@@ -547,6 +550,18 @@ button {
     height: 17px;
   }
 
+  .meters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .meters div {
+    min-height: 48px;
+    padding: 7px;
+  }
+}
+
+@media (max-width: 360px) {
   .meters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

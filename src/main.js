@@ -427,6 +427,12 @@ function fillSoftEllipse(targetCtx, x, y, radiusX, radiusY, color, alpha, rotati
   targetCtx.fill();
 }
 
+function latticeNoise(x, y, salt) {
+  let n = Math.imul(x + 3749, 374761393) ^ Math.imul(y + 6689, 668265263) ^ Math.imul(salt + 17, 1442695041);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+}
+
 function isRunoffCell(glaze, x, y) {
   if (x < 0 || y < 0 || x >= glaze.width || y >= glaze.height) {
     return false;
@@ -456,31 +462,41 @@ function renderRunoffLayer(runCtx, glaze, paletteColor) {
         continue;
       }
 
-      const centerX = x * glaze.cellSize + glaze.cellSize * 0.5;
-      const centerY = y * glaze.cellSize + glaze.cellSize * 0.5;
       const below = isRunoffCell(glaze, x, y + 1);
       const above = isRunoffCell(glaze, x, y - 1) || isRunoffCell(glaze, x - 1, y - 1) || isRunoffCell(glaze, x + 1, y - 1);
-      const flowAlpha = Math.min(0.09, 0.018 + deposited * 0.024 + water * 0.012);
+      const side = isRunoffCell(glaze, x - 1, y) || isRunoffCell(glaze, x + 1, y);
+      const connected = above || below || side;
+      const strength = deposited + water * 0.48;
+
+      if (!connected && strength < 0.08) {
+        continue;
+      }
+
+      const jitterX = (latticeNoise(x, y, 31) - 0.5) * glaze.cellSize * 0.72;
+      const jitterY = (latticeNoise(x, y, 47) - 0.5) * glaze.cellSize * 0.46;
+      const centerX = x * glaze.cellSize + glaze.cellSize * 0.5 + jitterX;
+      const centerY = y * glaze.cellSize + glaze.cellSize * 0.5 + jitterY;
+      const flowAlpha = Math.min(0.062, (connected ? 0.012 : 0.004) + deposited * 0.018 + water * 0.008);
 
       if (above || below) {
         const targetY = centerY + (below ? glaze.cellSize * 0.86 : -glaze.cellSize * 0.46);
         runCtx.strokeStyle = colorWithAlpha(paletteColor.wash, flowAlpha);
-        runCtx.lineWidth = Math.max(2.2, glaze.cellSize * 0.92 + deposited * 0.12);
+        runCtx.lineWidth = Math.max(1.7, glaze.cellSize * 0.72 + deposited * 0.08);
         runCtx.beginPath();
         runCtx.moveTo(centerX, centerY - glaze.cellSize * 0.42);
-        runCtx.lineTo(centerX + ((i % 3) - 1) * 0.34, targetY);
+        runCtx.lineTo(centerX + (latticeNoise(x, y, 59) - 0.5) * glaze.cellSize * 0.42, targetY);
         runCtx.stroke();
       }
 
       fillSoftEllipse(
         runCtx,
-        centerX + ((i % 5) - 2) * 0.28,
+        centerX + (latticeNoise(x, y, 71) - 0.5) * glaze.cellSize * 0.28,
         centerY,
-        glaze.cellSize * 0.58,
-        glaze.cellSize * (above || below ? 1.05 : 0.78),
+        glaze.cellSize * (connected ? 0.48 : 0.34),
+        glaze.cellSize * (above || below ? 0.92 : 0.58),
         paletteColor.wash,
-        flowAlpha * 0.78,
-        0
+        flowAlpha * (connected ? 0.7 : 0.34),
+        (latticeNoise(x, y, 83) - 0.5) * 0.34
       );
     }
   }
@@ -501,6 +517,8 @@ function createGlazeCanvas(glaze, paletteColor, points = []) {
   const runCtx = runs.getContext('2d');
   const grain = createLayerCanvas(paint.width, paint.height);
   const grainCtx = grain.getContext('2d');
+  const tooth = createLayerCanvas(paint.width, paint.height);
+  const toothCtx = tooth.getContext('2d');
 
   washCtx.lineCap = 'round';
   washCtx.lineJoin = 'round';
@@ -510,9 +528,9 @@ function createGlazeCanvas(glaze, paletteColor, points = []) {
     const offsetY = -glaze.bounds.y;
 
     // Cached blur keeps the watercolor wash continuous without per-frame filter cost.
-    washCtx.filter = `blur(${Math.max(2.4, glaze.cellSize * 0.72)}px)`;
-    washCtx.strokeStyle = colorWithAlpha(paletteColor.wash, 0.18);
-    washCtx.lineWidth = Math.max(16, glaze.cellSize * 5.2);
+    washCtx.filter = `blur(${Math.max(2.2, glaze.cellSize * 0.68)}px)`;
+    washCtx.strokeStyle = colorWithAlpha(paletteColor.wash, 0.2);
+    washCtx.lineWidth = Math.max(17, glaze.cellSize * 5.4);
     tracePath(washCtx, points, offsetX, offsetY);
     washCtx.stroke();
     washCtx.filter = 'none';
@@ -538,39 +556,57 @@ function createGlazeCanvas(glaze, paletteColor, points = []) {
       const roughness = 1 - glaze.paperHeight[i];
       const edge = glaze.edge[i] ?? 0;
       const granulation = glaze.granulation[i] ?? 0;
-      const centerX = px + glaze.cellSize * 0.5;
-      const centerY = py + glaze.cellSize * 0.5;
+      const jitterX = (latticeNoise(x, y, 101) - 0.5) * glaze.cellSize * 0.74;
+      const jitterY = (latticeNoise(x, y, 113) - 0.5) * glaze.cellSize * 0.58;
+      const centerX = px + glaze.cellSize * 0.5 + jitterX;
+      const centerY = py + glaze.cellSize * 0.5 + jitterY;
       const runoff = isRunoffCell(glaze, x, y);
-      const washAlpha = Math.min(0.038, deposited * 0.012 + (wet ? 0.003 : 0));
-      const washRadius = glaze.cellSize * (wet ? 1.34 : 1) + Math.min(1.6, deposited * 0.34);
+      const toothPull = 0.84 + roughness * 0.2;
+      const washAlpha = Math.min(0.046, deposited * 0.014 + (wet ? 0.004 : 0)) * toothPull;
+      const washRadius =
+        glaze.cellSize * (wet ? 1.38 : 1.04) + Math.min(1.8, deposited * 0.34) + latticeNoise(x, y, 127) * 0.7;
 
       if (!runoff) {
         fillSoftDot(washCtx, centerX, centerY, washRadius, paletteColor.wash, washAlpha);
       }
 
       if (edge > 0.002 && !runoff) {
-        const edgeAlpha = Math.min(0.018, edge * 0.016);
+        const edgeAlpha = Math.min(0.022, edge * 0.018);
         const edgeRadius = glaze.cellSize * 0.92 + Math.min(1.8, edge * 0.18);
         fillSoftEllipse(
           pigmentCtx,
-          centerX,
-          centerY,
+          centerX + (latticeNoise(x, y, 139) - 0.5) * glaze.cellSize * 0.34,
+          centerY + (latticeNoise(x, y, 149) - 0.5) * glaze.cellSize * 0.24,
           edgeRadius * 1.52,
           edgeRadius * 0.82,
           paletteColor.ink,
           edgeAlpha,
-          ((i % 7) - 3) * 0.05
+          (latticeNoise(x, y, 151) - 0.5) * 0.36
         );
       }
 
       if (granulation > 0.012 && roughness > 0.48) {
-        const dotX = centerX + ((i % 5) - 2) * 0.42;
-        const dotY = centerY + (((i >> 3) % 5) - 2) * 0.42;
+        const dotX = centerX + (latticeNoise(x, y, 163) - 0.5) * glaze.cellSize * 0.56;
+        const dotY = centerY + (latticeNoise(x, y, 173) - 0.5) * glaze.cellSize * 0.56;
         const dotRadius = Math.max(0.25, Math.min(0.58, glaze.cellSize * 0.08 + roughness * 0.18));
         grainCtx.fillStyle = colorWithAlpha(paletteColor.ink, Math.min(0.045, granulation * 0.032));
         grainCtx.beginPath();
         grainCtx.arc(dotX, dotY, dotRadius, 0, Math.PI * 2);
         grainCtx.fill();
+      }
+
+      if (!runoff && deposited > 0.006 && roughness > 0.5) {
+        const toothAlpha = Math.min(0.12, 0.035 + roughness * 0.046 + granulation * 0.018);
+        fillSoftEllipse(
+          toothCtx,
+          centerX + (latticeNoise(x, y, 181) - 0.5) * glaze.cellSize * 0.8,
+          centerY + (latticeNoise(x, y, 191) - 0.5) * glaze.cellSize * 0.8,
+          Math.max(0.5, glaze.cellSize * (0.18 + latticeNoise(x, y, 199) * 0.18)),
+          Math.max(0.35, glaze.cellSize * (0.1 + latticeNoise(x, y, 211) * 0.12)),
+          'rgba(0, 0, 0, 1)',
+          toothAlpha,
+          (latticeNoise(x, y, 223) - 0.5) * Math.PI
+        );
       }
     }
   }
@@ -581,6 +617,10 @@ function createGlazeCanvas(glaze, paletteColor, points = []) {
   paintCtx.filter = `blur(${Math.max(1.4, glaze.cellSize * 0.38)}px)`;
   paintCtx.drawImage(wash, 0, 0);
   paintCtx.filter = 'none';
+  paintCtx.globalCompositeOperation = 'destination-out';
+  paintCtx.globalAlpha = 0.34;
+  paintCtx.drawImage(tooth, 0, 0);
+  paintCtx.globalCompositeOperation = 'multiply';
   paintCtx.globalAlpha = 0.86;
   paintCtx.filter = `blur(${Math.max(0.7, glaze.cellSize * 0.2)}px)`;
   paintCtx.drawImage(runs, 0, 0);
@@ -921,11 +961,19 @@ function renderTrack(track) {
   ctx.drawImage(track.glazeCanvas, track.glaze.bounds.x, track.glaze.bounds.y);
 
   ctx.globalCompositeOperation = 'multiply';
-  ctx.globalAlpha = 0.18;
+  ctx.globalAlpha = 0.11;
   ctx.strokeStyle = track.palette.ink;
   ctx.lineWidth = Math.max(1.5, track.thickness * 0.18);
   drawPath(track.points);
   ctx.stroke();
+
+  ctx.globalAlpha = 0.07;
+  ctx.setLineDash([Math.max(4, track.thickness * 0.55), Math.max(6, track.thickness * 0.72)]);
+  ctx.lineDashOffset = -((track.glaze.metrics?.seedCellCount ?? track.points.length) % 23);
+  ctx.lineWidth = Math.max(1.1, track.thickness * 0.14);
+  drawPath(track.points);
+  ctx.stroke();
+  ctx.setLineDash([]);
 
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 0.1;

@@ -83,6 +83,14 @@ function hashBuffer(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
+export function hashAssetBuffer(buffer, assetPath) {
+  if (/\.svg(?:$|[?#])/.test(assetPath)) {
+    return hashBuffer(buffer.toString('utf8').replace(/\r\n?/g, '\n'));
+  }
+
+  return hashBuffer(buffer);
+}
+
 async function fetchBytes(url) {
   const response = await fetch(url, {
     cache: 'no-store',
@@ -138,8 +146,8 @@ export function assertAssetsUseExpectedBase(assets, expectedBase, sourceLabel) {
 
 async function compareLiveAsset(liveBase, assetPath, localPath) {
   const remoteUrl = new URL(assetPath, liveBase);
-  const remoteHash = hashBuffer(await fetchBytes(remoteUrl));
-  const localHash = hashBuffer(await readFile(localPath));
+  const remoteHash = hashAssetBuffer(await fetchBytes(remoteUrl), assetPath);
+  const localHash = hashAssetBuffer(await readFile(localPath), assetPath);
 
   if (remoteHash !== localHash) {
     throw new Error(`${assetPath} hash mismatch: live ${remoteHash}, local ${localHash}`);
