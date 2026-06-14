@@ -170,6 +170,7 @@ async function main() {
     await page.waitForTimeout(260);
     states.mobile = await readState(page, 'mobile');
     assert(states.mobile.viewport.overflowX === 0, 'Mobile viewport should not overflow horizontally');
+    assert(Number(states.mobile.dataset.bleeds) > 0, 'Rider contact should rewet watercolor and increment bleed telemetry');
     screenshots.mobile = await maybeScreenshot(page, options.screenshots, 'mobile');
 
     assertNoBrowserFailures({ consoleEvents, pageErrors, badResponses });

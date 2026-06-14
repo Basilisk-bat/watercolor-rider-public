@@ -6,6 +6,7 @@ import {
   addRideTrack,
   createRideWorld,
   getRideTelemetry,
+  isRideCollisionUpdate,
   nearestTrackContact,
   pointsToLineRiderSegments,
   removeRideTrack,
@@ -98,6 +99,15 @@ test('rider exposes Line Rider body points and mounted state', () => {
   assert.ok(world.rider.points.TAIL);
   assert.ok(world.rider.points.PEG);
   assert.ok(world.rider.points.SHOULDER);
+});
+
+test('collision update detection survives production constructor minification', () => {
+  const lineToTrack = new Map([[7, 'flat']]);
+
+  assert.equal(isRideCollisionUpdate({ id: 7, updated: [{}], constructor: { name: 't' } }, lineToTrack), true);
+  assert.equal(isRideCollisionUpdate({ id: 'PEG_TAIL', updated: [{}, {}], constructor: { name: 't' } }, lineToTrack), false);
+  assert.equal(isRideCollisionUpdate({ id: 8, updated: [{}], constructor: { name: 't' } }, lineToTrack), false);
+  assert.equal(isRideCollisionUpdate({ updated: [{}], constructor: { name: 't' } }, lineToTrack), false);
 });
 
 test('spawnRider sets the lr-core start position and resets to frame zero', () => {

@@ -134,6 +134,18 @@ function getPoint(body, id) {
   };
 }
 
+export function isRideCollisionUpdate(update, lineToTrack) {
+  if (!update) {
+    return false;
+  }
+
+  if (update.type === 'CollisionUpdate' || update.constructor?.name === 'CollisionUpdate') {
+    return true;
+  }
+
+  return Number.isInteger(update.id) && lineToTrack.has(update.id) && Array.isArray(update.updated);
+}
+
 function getCollisionContacts(world, frameIndex) {
   if (frameIndex <= 0) {
     return [];
@@ -144,7 +156,7 @@ function getCollisionContacts(world, frameIndex) {
   const contacts = [];
 
   for (const update of updates) {
-    if (update.type !== 'CollisionUpdate' && update.constructor?.name !== 'CollisionUpdate') {
+    if (!isRideCollisionUpdate(update, world.lineToTrack)) {
       continue;
     }
 
