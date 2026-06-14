@@ -215,7 +215,8 @@ function simulateStep(glaze, options) {
   }
 }
 
-function finalizeGlaze(glaze) {
+function finalizeGlaze(glaze, options = {}) {
+  const { redistributeEdge = true } = options;
   const edgeCandidates = [];
   const sourceCandidates = [];
   let sourceMass = 0;
@@ -241,7 +242,7 @@ function finalizeGlaze(glaze) {
     }
   }
 
-  if (edgeCandidates.length > 0 && sourceMass > 0) {
+  if (redistributeEdge && edgeCandidates.length > 0 && sourceMass > 0) {
     const transferMass = sourceMass * 0.56;
     let edgeWeight = 0;
 
@@ -363,6 +364,71 @@ export function simulateWatercolorStroke(points, options = {}) {
   }
 
   return finalizeGlaze(glaze);
+}
+
+export function rewetGlazeAtPoint(glaze, point, options = {}) {
+  const config = {
+    ...DEFAULTS,
+    ...options,
+    evaporation: options.evaporation ?? 0.002,
+    flowRate: options.flowRate ?? 0.42,
+    diffusion: options.diffusion ?? 0.12,
+    runThreshold: options.runThreshold ?? 0.48,
+    runStrength: options.runStrength ?? 0.64
+  };
+  const speed = Math.max(0, options.speed ?? 0);
+  const radius = Math.max(glaze.cellSize * 1.8, options.radius ?? 16);
+  const water = Math.max(0, options.water ?? 0.16) * (0.72 + Math.min(2.4, speed / 120));
+  const localX = point.x - glaze.bounds.x;
+  const localY = point.y - glaze.bounds.y;
+  const minX = Math.max(0, Math.floor((localX - radius) / glaze.cellSize));
+  const maxX = Math.min(glaze.width - 1, Math.ceil((localX + radius) / glaze.cellSize));
+  const minY = Math.max(0, Math.floor((localY - radius) / glaze.cellSize));
+  const maxY = Math.min(glaze.height - 1, Math.ceil((localY + radius) / glaze.cellSize));
+  let affectedCellCount = 0;
+  let addedWater = 0;
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const cellX = x * glaze.cellSize + glaze.cellSize * 0.5;
+      const cellY = y * glaze.cellSize + glaze.cellSize * 0.5;
+      const distance = Math.hypot(cellX - localX, cellY - localY);
+
+      if (distance > radius) {
+        continue;
+      }
+
+      const i = idx(x, y, glaze.width);
+      const falloff = Math.exp(-(distance * distance) / (radius * radius * 0.58));
+      const paperPull = 0.78 + glaze.capacity[i] * 0.24 + (1 - glaze.paperHeight[i]) * 0.18;
+      const addition = water * falloff * paperPull;
+
+      if (addition <= 0.001) {
+        continue;
+      }
+
+      glaze.water[i] += addition;
+      glaze.wetMask[i] = 1;
+      addedWater += addition;
+      affectedCellCount += 1;
+    }
+  }
+
+  if (affectedCellCount === 0) {
+    return { affectedCellCount, addedWater: 0 };
+  }
+
+  const steps = Math.max(1, Math.min(5, Math.round(options.steps ?? 2)));
+  for (let step = 0; step < steps; step += 1) {
+    simulateStep(glaze, config);
+  }
+
+  finalizeGlaze(glaze, { redistributeEdge: false });
+
+  return {
+    affectedCellCount,
+    addedWater
+  };
 }
 
 export function aggregateGlazeMetrics(glazes) {

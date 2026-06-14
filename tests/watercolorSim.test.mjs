@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { simulateWatercolorStroke } from '../src/watercolorSim.js';
+import { rewetGlazeAtPoint, simulateWatercolorStroke } from '../src/watercolorSim.js';
 
 const stroke = [
   { x: 0, y: 0 },
@@ -18,6 +18,10 @@ function compact(glaze) {
       Object.entries(glaze.metrics).map(([key, value]) => [key, Math.round(value * 10000) / 10000])
     )
   };
+}
+
+function sumField(field) {
+  return Array.from(field).reduce((sum, value) => sum + value, 0);
 }
 
 test('watercolor simulation is deterministic for the same stroke and seed', () => {
@@ -54,4 +58,29 @@ test('edge darkening and granulation exceed the stroke center baseline', () => {
 
   assert.ok(glaze.metrics.edgeDepositedAverage > glaze.metrics.centerDepositedAverage);
   assert.ok(glaze.metrics.granulationMass > 0);
+});
+
+test('rider contact rewetting adds moisture without creating pigment', () => {
+  const glaze = simulateWatercolorStroke(stroke, { seed: 16, steps: 26, water: 0.72, pigment: 1 });
+  const beforeWater = sumField(glaze.water);
+  const beforePigment = glaze.metrics.totalPigmentMass;
+  const beforeWetCells = glaze.metrics.wetCellCount;
+  const result = rewetGlazeAtPoint(glaze, { x: 90, y: 0 }, { speed: 160, radius: 18, water: 0.14, steps: 2 });
+  const afterWater = sumField(glaze.water);
+  const pigmentDrift = Math.abs(glaze.metrics.totalPigmentMass - beforePigment);
+
+  assert.ok(result.affectedCellCount > 0);
+  assert.ok(result.addedWater > 0);
+  assert.ok(afterWater > beforeWater);
+  assert.ok(glaze.metrics.wetCellCount >= beforeWetCells);
+  assert.ok(pigmentDrift / beforePigment < 0.001);
+});
+
+test('faster rider contact adds more bleed moisture', () => {
+  const slow = simulateWatercolorStroke(stroke, { seed: 17, steps: 26, water: 0.72, pigment: 1 });
+  const fast = simulateWatercolorStroke(stroke, { seed: 17, steps: 26, water: 0.72, pigment: 1 });
+  const slowResult = rewetGlazeAtPoint(slow, { x: 90, y: 0 }, { speed: 20, radius: 18, water: 0.12, steps: 1 });
+  const fastResult = rewetGlazeAtPoint(fast, { x: 90, y: 0 }, { speed: 260, radius: 18, water: 0.12, steps: 1 });
+
+  assert.ok(fastResult.addedWater > slowResult.addedWater * 1.5);
 });

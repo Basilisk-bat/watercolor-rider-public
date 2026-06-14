@@ -19,12 +19,13 @@ import {
   ENGINE_FPS,
   createRideWorld,
   getRideTelemetry,
+  nearestTrackContact,
   resetRide,
   setRideTracks,
   spawnRider,
   stepRide
 } from './ridePhysics.js';
-import { aggregateGlazeMetrics, simulateWatercolorStroke } from './watercolorSim.js';
+import { aggregateGlazeMetrics, rewetGlazeAtPoint, simulateWatercolorStroke } from './watercolorSim.js';
 
 createIcons({ icons });
 
@@ -57,6 +58,7 @@ const debugDeposited = document.querySelector('[data-diagnostic="deposited"]');
 const debugRunoff = document.querySelector('[data-diagnostic="runoff"]');
 
 const CHROME_IDLE_MS = 2200;
+const RIDER_BLEED_INTERVAL_MS = 70;
 let chromeTimer = null;
 
 const palette = [
@@ -102,7 +104,13 @@ const state = {
     topSpeed: 0,
     inkLength: 0,
     strokeCount: 0,
-    resets: 0
+    resets: 0,
+    watercolorBleeds: 0
+  },
+  watercolor: {
+    lastBleedAt: 0,
+    lastBleedTrackId: null,
+    lastBleedWater: 0
   },
   ui: {
     chromeVisible: true,
@@ -169,6 +177,7 @@ function publishTelemetry() {
   app.dataset.pigmentMass = String(Math.round(watercolor.totalPigmentMass * 10) / 10);
   app.dataset.depositedMass = String(Math.round(watercolor.depositedPigmentMass * 10) / 10);
   app.dataset.runoff = String(watercolor.runoffCellCount);
+  app.dataset.bleeds = String(state.metrics.watercolorBleeds);
   updateDebugDiagnostics();
 }
 
@@ -182,6 +191,10 @@ function modeStatus() {
 function setStatus(status) {
   statusStrip.textContent = status;
   publishTelemetry();
+}
+
+function clampValue(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function hideChrome() {
@@ -822,6 +835,8 @@ function updateMetrics(deltaMs) {
     state.metrics.currentAir = 0;
   }
 
+  bleedRiderContact(telemetry);
+
   speedMeter.textContent = `${speed.toFixed(1)} px/s`;
   airMeter.textContent = `${state.metrics.longestAir.toFixed(1)}s air`;
   setStatus(telemetry.status);
@@ -836,6 +851,56 @@ function updateMetrics(deltaMs) {
       y: Math.round(state.rider.position.y)
     });
   }
+}
+
+function bleedRiderContact(telemetry) {
+  if (!telemetry.grounded || !state.rider?.mounted) {
+    return null;
+  }
+
+  const now = performance.now();
+  if (now - state.watercolor.lastBleedAt < RIDER_BLEED_INTERVAL_MS) {
+    return null;
+  }
+
+  const contact = nearestTrackContact(state.rideWorld, state.rider.position);
+  if (!contact || contact.distance > 34) {
+    return null;
+  }
+
+  const track = state.tracks.find((candidate) => candidate.id === contact.trackId);
+  if (!track?.glaze) {
+    return null;
+  }
+
+  const speed = Math.max(telemetry.speed, telemetry.engineSpeed ?? 0);
+  const result = rewetGlazeAtPoint(track.glaze, contact.point, {
+    radius: clampValue(13 + speed * 0.024, 14, 30),
+    water: clampValue(0.055 + speed * 0.0005, 0.06, 0.24),
+    speed,
+    steps: speed > 180 ? 3 : 2
+  });
+
+  if (result.affectedCellCount === 0) {
+    return null;
+  }
+
+  track.glazeCanvas = null;
+  state.watercolor.lastBleedAt = now;
+  state.watercolor.lastBleedTrackId = track.id;
+  state.watercolor.lastBleedWater = result.addedWater;
+  state.metrics.watercolorBleeds += 1;
+
+  if (state.metrics.watercolorBleeds % 12 === 1) {
+    record('rider-bleed', {
+      trackId: track.id,
+      cells: result.affectedCellCount,
+      water: Math.round(result.addedWater * 1000) / 1000,
+      speed: Math.round(speed * 10) / 10
+    });
+  }
+
+  return result;
 }
 
 function drawPath(points) {
@@ -1309,6 +1374,7 @@ window.RPK_RIDER = {
         }
       : null,
     metrics: { ...state.metrics },
+    watercolorDynamics: { ...state.watercolor },
     camera: { ...state.camera },
     watercolor: getWatercolorMetrics(),
     engine: {

@@ -42,6 +42,14 @@ Use the live Pages URL and verify:
 - Mobile width has no horizontal overflow.
 - Watercolor reads as soft wash/bleed/runs, not square-cell marks.
 
+Automated smoke:
+
+```powershell
+npm run smoke:live
+```
+
+The script uses locally installed Chrome through `playwright-core`. It is intentionally not part of CI because hosted runners may not have Chrome installed. Add `-- --headed` to watch the smoke run, or `-- --screenshots C:\path\to\qa-folder` to capture desktop and mobile screenshots.
+
 ## Public Source Sync
 
 After a private source commit, mirror source changes to `Basilisk-bat/watercolor-rider-public` only when they are public-safe.
