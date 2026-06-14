@@ -1,12 +1,13 @@
-import { chaikinSmooth, distance, simplifyPoints } from './trackGeometry.js';
+import { chaikinSmooth, distance, simplifyPoints, totalLength } from './trackGeometry.js';
 
 export const WORKLOAD_LIMITS = {
   maxTrackPoints: 1800,
   maxTracks: 24,
   maxHistory: 30,
-  maxGlazeCells: 45000,
+  maxRenderSamples: 260,
+  maxMaterialCanvasPixels: 900000,
   metricsCacheMs: 250,
-  rewetCanvasRefreshMs: 120,
+  materialCanvasRefreshMs: 120,
   eraserIntervalMs: 45,
   eraserMinScreenDistance: 6,
   pinchDeadzoneRatio: 0.015,
@@ -79,33 +80,32 @@ export function estimateStrokeBounds(points, margin = 88) {
   };
 }
 
-export function estimateGlazeCellCount(points, cellSize = 4, margin = 88) {
+export function chooseRenderBudget(points, options = {}) {
+  const margin = options.margin ?? 72;
+  const maxSamples = options.maxSamples ?? WORKLOAD_LIMITS.maxRenderSamples;
+  const maxCanvasPixels = options.maxCanvasPixels ?? WORKLOAD_LIMITS.maxMaterialCanvasPixels;
+  const sampleSpacing = options.sampleSpacing ?? 18;
+  const length = totalLength(points);
   const bounds = estimateStrokeBounds(points, margin);
-  return Math.ceil(bounds.width / cellSize) * Math.ceil(bounds.height / cellSize);
-}
+  const desiredSamples = Math.max(12, Math.ceil(length / sampleSpacing));
+  const sampleCount = Math.min(maxSamples, desiredSamples);
+  const canvasPixels = bounds.width * bounds.height;
+  let canvasScale = canvasPixels > maxCanvasPixels ? Math.sqrt(maxCanvasPixels / canvasPixels) : 1;
+  let scaledWidth = Math.ceil(bounds.width * canvasScale);
+  let scaledHeight = Math.ceil(bounds.height * canvasScale);
 
-export function chooseWatercolorBudget(points, options = {}) {
-  const baseCellSize = options.cellSize ?? 4;
-  const baseSteps = options.steps ?? 36;
-  const margin = options.margin ?? 88;
-  const maxCells = options.maxCells ?? WORKLOAD_LIMITS.maxGlazeCells;
-  const bounds = estimateStrokeBounds(points, margin);
-  const idealCellSize = Math.sqrt((bounds.width * bounds.height) / maxCells);
-  let cellSize = Math.max(baseCellSize, Math.ceil(idealCellSize));
-  let cellCount = Math.ceil(bounds.width / cellSize) * Math.ceil(bounds.height / cellSize);
-  while (cellCount > maxCells) {
-    cellSize += 1;
-    cellCount = Math.ceil(bounds.width / cellSize) * Math.ceil(bounds.height / cellSize);
+  while (scaledWidth * scaledHeight > maxCanvasPixels && canvasScale > 0.2) {
+    canvasScale *= 0.98;
+    scaledWidth = Math.ceil(bounds.width * canvasScale);
+    scaledHeight = Math.ceil(bounds.height * canvasScale);
   }
-  const stepScale = cellSize > baseCellSize ? Math.sqrt(baseCellSize / cellSize) : 1;
-  const minSteps = options.minSteps ?? (options.starter ? 30 : 24);
-  const steps = clamp(Math.round(baseSteps * stepScale), minSteps, baseSteps);
 
   return {
-    cellSize,
-    steps,
-    cellCount,
-    limited: cellSize > baseCellSize || steps < baseSteps
+    sampleCount,
+    canvasScale,
+    canvasPixels: scaledWidth * scaledHeight,
+    renderUnits: sampleCount,
+    limited: sampleCount < desiredSamples || canvasScale < 1
   };
 }
 

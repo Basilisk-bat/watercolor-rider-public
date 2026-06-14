@@ -26,10 +26,10 @@ import {
   stepRide
 } from './ridePhysics.js';
 import { getRideRecovery } from './recoveryRules.js';
-import { aggregateGlazeMetrics, rewetGlazeAtPoint, simulateWatercolorStroke } from './watercolorSim.js';
+import { aggregateStrokeMetrics, createStrokeMaterial, rewetStrokeMaterialAtPoint } from './strokeMaterial.js';
 import {
   WORKLOAD_LIMITS,
-  chooseWatercolorBudget,
+  chooseRenderBudget,
   createTimedCache,
   prepareTrackPoints,
   shouldSampleStrokePoint
@@ -62,10 +62,10 @@ const debugToggle = document.querySelector('#debugToggle');
 const debugDrawer = document.querySelector('#debugDrawer');
 const debugStatus = document.querySelector('[data-diagnostic="status"]');
 const debugZoom = document.querySelector('[data-diagnostic="zoom"]');
-const debugWetness = document.querySelector('[data-diagnostic="wetness"]');
-const debugPigment = document.querySelector('[data-diagnostic="pigment"]');
-const debugDeposited = document.querySelector('[data-diagnostic="deposited"]');
-const debugRunoff = document.querySelector('[data-diagnostic="runoff"]');
+const debugTexture = document.querySelector('[data-diagnostic="texture"]');
+const debugInk = document.querySelector('[data-diagnostic="ink"]');
+const debugMarks = document.querySelector('[data-diagnostic="marks"]');
+const debugTrails = document.querySelector('[data-diagnostic="trails"]');
 
 const CHROME_IDLE_MS = 2200;
 const RIDER_BLEED_INTERVAL_MS = 70;
@@ -73,9 +73,10 @@ const {
   maxTrackPoints: MAX_TRACK_POINTS,
   maxTracks: MAX_TRACKS,
   maxHistory: MAX_HISTORY,
-  maxGlazeCells: MAX_GLAZE_CELLS,
+  maxRenderSamples: MAX_RENDER_SAMPLES,
+  maxMaterialCanvasPixels: MAX_MATERIAL_CANVAS_PIXELS,
   metricsCacheMs: METRICS_CACHE_MS,
-  rewetCanvasRefreshMs: REWET_CANVAS_REFRESH_MS,
+  materialCanvasRefreshMs: MATERIAL_CANVAS_REFRESH_MS,
   eraserIntervalMs: ERASER_INTERVAL_MS,
   eraserMinScreenDistance: ERASER_MIN_SCREEN_DISTANCE,
   pinchDeadzoneRatio: PINCH_DEADZONE_RATIO,
@@ -174,12 +175,12 @@ const state = {
     inkLength: 0,
     strokeCount: 0,
     resets: 0,
-    watercolorBleeds: 0
+    renderRewets: 0
   },
-  watercolor: {
-    lastBleedAt: 0,
-    lastBleedTrackId: null,
-    lastBleedWater: 0
+  material: {
+    lastRewetAt: 0,
+    lastRewetTrackId: null,
+    lastRewetAmount: 0
   },
   eraser: {
     lastAt: 0,
@@ -190,8 +191,8 @@ const state = {
     worstStrokeBuildMs: 0,
     lastFrameMs: 0,
     worstFrameMs: 0,
-    glazeRebuilds: 0,
-    watercolorMetricRecomputes: 0,
+    materialRebuilds: 0,
+    renderMetricRecomputes: 0,
     lastTrackLimited: false,
     lastTrackRejected: null
   },
@@ -209,17 +210,17 @@ const state = {
   log: []
 };
 
-const watercolorMetricsCache = createTimedCache(
+const renderMetricsCache = createTimedCache(
   () => {
-    const metrics = aggregateGlazeMetrics(state.tracks.map((track) => track.glaze));
-    state.performance.watercolorMetricRecomputes += 1;
+    const metrics = aggregateStrokeMetrics(state.tracks.map((track) => track.material));
+    state.performance.renderMetricRecomputes += 1;
     return metrics;
   },
   { ttlMs: METRICS_CACHE_MS }
 );
 
-function invalidateWatercolorMetrics() {
-  watercolorMetricsCache.invalidate();
+function invalidateRenderMetrics() {
+  renderMetricsCache.invalidate();
 }
 
 function record(type, detail = {}) {
@@ -234,8 +235,8 @@ function record(type, detail = {}) {
   }
 }
 
-function getWatercolorMetrics() {
-  return watercolorMetricsCache.get();
+function getRenderMetrics() {
+  return renderMetricsCache.get();
 }
 
 function getBrush(brushId = state.brushId) {
@@ -257,18 +258,18 @@ function updateDebugDiagnostics() {
   if (debugZoom) {
     debugZoom.textContent = `${Math.round(state.camera.targetZoom * 100)}%`;
   }
-  const watercolor = getWatercolorMetrics();
-  if (debugWetness) {
-    debugWetness.textContent = `${Math.round(watercolor.wetness * 100)}%`;
+  const render = getRenderMetrics();
+  if (debugTexture) {
+    debugTexture.textContent = `${Math.round(render.textureLoad * 100)}%`;
   }
-  if (debugPigment) {
-    debugPigment.textContent = watercolor.totalPigmentMass.toFixed(1);
+  if (debugInk) {
+    debugInk.textContent = render.totalPigmentMass.toFixed(1);
   }
-  if (debugDeposited) {
-    debugDeposited.textContent = watercolor.depositedPigmentMass.toFixed(1);
+  if (debugMarks) {
+    debugMarks.textContent = String(render.renderUnitCount);
   }
-  if (debugRunoff) {
-    debugRunoff.textContent = String(watercolor.runoffCellCount);
+  if (debugTrails) {
+    debugTrails.textContent = String(render.trailCount);
   }
 }
 
@@ -287,12 +288,17 @@ function publishTelemetry() {
   app.dataset.menuOpen = String(state.ui.menuOpen);
   app.dataset.spawn = String(state.spawn.active);
   app.dataset.zoom = String(Math.round(state.camera.targetZoom * 100) / 100);
-  const watercolor = getWatercolorMetrics();
-  app.dataset.wetness = String(Math.round(watercolor.wetness * 1000) / 1000);
-  app.dataset.pigmentMass = String(Math.round(watercolor.totalPigmentMass * 10) / 10);
-  app.dataset.depositedMass = String(Math.round(watercolor.depositedPigmentMass * 10) / 10);
-  app.dataset.runoff = String(watercolor.runoffCellCount);
-  app.dataset.bleeds = String(state.metrics.watercolorBleeds);
+  const render = getRenderMetrics();
+  app.dataset.texture = String(Math.round(render.textureLoad * 1000) / 1000);
+  app.dataset.inkMass = String(Math.round(render.totalPigmentMass * 10) / 10);
+  app.dataset.marks = String(render.renderUnitCount);
+  app.dataset.trails = String(render.trailCount);
+  app.dataset.rewets = String(state.metrics.renderRewets);
+  app.dataset.wetness = app.dataset.texture;
+  app.dataset.pigmentMass = app.dataset.inkMass;
+  app.dataset.depositedMass = String(Math.round(render.depositedPigmentMass * 10) / 10);
+  app.dataset.runoff = app.dataset.trails;
+  app.dataset.bleeds = app.dataset.rewets;
   updateDebugDiagnostics();
 }
 
@@ -612,207 +618,131 @@ function latticeNoise(x, y, salt) {
   return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
 }
 
-function isRunoffCell(glaze, x, y) {
-  if (x < 0 || y < 0 || x >= glaze.width || y >= glaze.height) {
-    return false;
-  }
-  const i = y * glaze.width + x;
-  const worldY = y * glaze.cellSize + glaze.bounds.y;
-
-  return glaze.runMask[i] > 0 && glaze.seedMask[i] === 0 && worldY > glaze.seedMaxY + glaze.cellSize * 2;
+function applyMaterialTransform(targetCtx, material) {
+  const scale = material.canvasScale ?? 1;
+  targetCtx.setTransform(scale, 0, 0, scale, -material.bounds.x * scale, -material.bounds.y * scale);
 }
 
-function renderRunoffLayer(runCtx, glaze, paletteColor) {
-  runCtx.lineCap = 'round';
-  runCtx.lineJoin = 'round';
-  runCtx.globalCompositeOperation = 'source-over';
-
-  for (let y = 0; y < glaze.height; y += 1) {
-    for (let x = 0; x < glaze.width; x += 1) {
-      if (!isRunoffCell(glaze, x, y)) {
-        continue;
-      }
-
-      const i = y * glaze.width + x;
-      const deposited = glaze.deposited[i];
-      const water = glaze.water[i];
-
-      if (deposited <= 0.001 && water <= 0.001) {
-        continue;
-      }
-
-      const below = isRunoffCell(glaze, x, y + 1);
-      const above = isRunoffCell(glaze, x, y - 1) || isRunoffCell(glaze, x - 1, y - 1) || isRunoffCell(glaze, x + 1, y - 1);
-      const side = isRunoffCell(glaze, x - 1, y) || isRunoffCell(glaze, x + 1, y);
-      const connected = above || below || side;
-      const strength = deposited + water * 0.48;
-
-      if (!connected && strength < 0.08) {
-        continue;
-      }
-
-      const jitterX = (latticeNoise(x, y, 31) - 0.5) * glaze.cellSize * 0.72;
-      const jitterY = (latticeNoise(x, y, 47) - 0.5) * glaze.cellSize * 0.46;
-      const centerX = x * glaze.cellSize + glaze.cellSize * 0.5 + jitterX;
-      const centerY = y * glaze.cellSize + glaze.cellSize * 0.5 + jitterY;
-      const flowAlpha = Math.min(0.062, (connected ? 0.012 : 0.004) + deposited * 0.018 + water * 0.008);
-
-      if (above || below) {
-        const targetY = centerY + (below ? glaze.cellSize * 0.86 : -glaze.cellSize * 0.46);
-        runCtx.strokeStyle = colorWithAlpha(paletteColor.wash, flowAlpha);
-        runCtx.lineWidth = Math.max(1.7, glaze.cellSize * 0.72 + deposited * 0.08);
-        runCtx.beginPath();
-        runCtx.moveTo(centerX, centerY - glaze.cellSize * 0.42);
-        runCtx.lineTo(centerX + (latticeNoise(x, y, 59) - 0.5) * glaze.cellSize * 0.42, targetY);
-        runCtx.stroke();
-      }
-
-      fillSoftEllipse(
-        runCtx,
-        centerX + (latticeNoise(x, y, 71) - 0.5) * glaze.cellSize * 0.28,
-        centerY,
-        glaze.cellSize * (connected ? 0.48 : 0.34),
-        glaze.cellSize * (above || below ? 0.92 : 0.58),
-        paletteColor.wash,
-        flowAlpha * (connected ? 0.7 : 0.34),
-        (latticeNoise(x, y, 83) - 0.5) * 0.34
-      );
-    }
-  }
+function resetLayerTransform(targetCtx) {
+  targetCtx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
-function createGlazeCanvas(glaze, paletteColor, points = []) {
+function createMaterialCanvas(material, paletteColor, points = [], brushId = 'watercolor') {
   const paint = document.createElement('canvas');
   const paintCtx = paint.getContext('2d');
-  paint.width = Math.max(1, Math.ceil(glaze.bounds.width));
-  paint.height = Math.max(1, Math.ceil(glaze.bounds.height));
+  const scale = material.canvasScale ?? 1;
+  paint.width = Math.max(1, Math.ceil(material.bounds.width * scale));
+  paint.height = Math.max(1, Math.ceil(material.bounds.height * scale));
   paintCtx.clearRect(0, 0, paint.width, paint.height);
 
   const wash = createLayerCanvas(paint.width, paint.height);
   const washCtx = wash.getContext('2d');
-  const pigment = createLayerCanvas(paint.width, paint.height);
-  const pigmentCtx = pigment.getContext('2d');
-  const runs = createLayerCanvas(paint.width, paint.height);
-  const runCtx = runs.getContext('2d');
+  const ink = createLayerCanvas(paint.width, paint.height);
+  const inkCtx = ink.getContext('2d');
+  const trails = createLayerCanvas(paint.width, paint.height);
+  const trailCtx = trails.getContext('2d');
   const grain = createLayerCanvas(paint.width, paint.height);
   const grainCtx = grain.getContext('2d');
   const tooth = createLayerCanvas(paint.width, paint.height);
   const toothCtx = tooth.getContext('2d');
 
-  washCtx.lineCap = 'round';
-  washCtx.lineJoin = 'round';
+  for (const layerCtx of [washCtx, inkCtx, trailCtx, grainCtx, toothCtx]) {
+    applyMaterialTransform(layerCtx, material);
+    layerCtx.lineCap = 'round';
+    layerCtx.lineJoin = 'round';
+  }
 
   if (points.length > 1) {
-    const offsetX = -glaze.bounds.x;
-    const offsetY = -glaze.bounds.y;
-
-    // Cached blur keeps the watercolor wash continuous without per-frame filter cost.
-    washCtx.filter = `blur(${Math.max(2.2, glaze.cellSize * 0.68)}px)`;
-    washCtx.strokeStyle = colorWithAlpha(paletteColor.wash, 0.2);
-    washCtx.lineWidth = Math.max(17, glaze.cellSize * 5.4);
-    tracePath(washCtx, points, offsetX, offsetY);
+    const washWidth = brushId === 'marker' ? material.thickness * 1.55 : material.thickness * 2.25;
+    washCtx.filter = `blur(${Math.max(1.4, material.thickness * 0.18 * scale)}px)`;
+    washCtx.strokeStyle = colorWithAlpha(paletteColor.wash, brushId === 'marker' ? 0.3 : 0.2);
+    washCtx.lineWidth = washWidth;
+    tracePath(washCtx, points);
     washCtx.stroke();
     washCtx.filter = 'none';
 
-    washCtx.strokeStyle = colorWithAlpha(paletteColor.wash, 0.12);
-    washCtx.lineWidth = Math.max(9, glaze.cellSize * 2.8);
-    tracePath(washCtx, points, offsetX, offsetY);
-    washCtx.stroke();
+    inkCtx.globalCompositeOperation = 'multiply';
+    inkCtx.strokeStyle = colorWithAlpha(paletteColor.ink, brushId === 'pencil' ? 0.48 : 0.18);
+    inkCtx.lineWidth = Math.max(1.2, material.thickness * (brushId === 'pencil' ? 0.36 : 0.22));
+    tracePath(inkCtx, points);
+    inkCtx.stroke();
   }
 
-  for (let y = 0; y < glaze.height; y += 1) {
-    for (let x = 0; x < glaze.width; x += 1) {
-      const i = y * glaze.width + x;
-      const deposited = glaze.deposited[i];
-      const wet = glaze.wetMask[i] > 0;
+  for (const sample of material.samples) {
+    const radius = material.thickness * sample.radius * (brushId === 'pencil' ? 0.18 : 0.38);
+    if (brushId !== 'pencil') {
+      fillSoftEllipse(
+        washCtx,
+        sample.x,
+        sample.y,
+        Math.max(1.2, radius * 1.55),
+        Math.max(0.8, radius * 0.9),
+        paletteColor.wash,
+        Math.min(0.055, sample.alpha * 0.11),
+        sample.angle
+      );
+    }
 
-      if (deposited <= 0.002 && !wet) {
-        continue;
-      }
-
-      const px = x * glaze.cellSize;
-      const py = y * glaze.cellSize;
-      const roughness = 1 - glaze.paperHeight[i];
-      const edge = glaze.edge[i] ?? 0;
-      const granulation = glaze.granulation[i] ?? 0;
-      const jitterX = (latticeNoise(x, y, 101) - 0.5) * glaze.cellSize * 0.74;
-      const jitterY = (latticeNoise(x, y, 113) - 0.5) * glaze.cellSize * 0.58;
-      const centerX = px + glaze.cellSize * 0.5 + jitterX;
-      const centerY = py + glaze.cellSize * 0.5 + jitterY;
-      const runoff = isRunoffCell(glaze, x, y);
-      const toothPull = 0.84 + roughness * 0.2;
-      const washAlpha = Math.min(0.046, deposited * 0.014 + (wet ? 0.004 : 0)) * toothPull;
-      const washRadius =
-        glaze.cellSize * (wet ? 1.38 : 1.04) + Math.min(1.8, deposited * 0.34) + latticeNoise(x, y, 127) * 0.7;
-
-      if (!runoff) {
-        fillSoftDot(washCtx, centerX, centerY, washRadius, paletteColor.wash, washAlpha);
-      }
-
-      if (edge > 0.002 && !runoff) {
-        const edgeAlpha = Math.min(0.022, edge * 0.018);
-        const edgeRadius = glaze.cellSize * 0.92 + Math.min(1.8, edge * 0.18);
-        fillSoftEllipse(
-          pigmentCtx,
-          centerX + (latticeNoise(x, y, 139) - 0.5) * glaze.cellSize * 0.34,
-          centerY + (latticeNoise(x, y, 149) - 0.5) * glaze.cellSize * 0.24,
-          edgeRadius * 1.52,
-          edgeRadius * 0.82,
-          paletteColor.ink,
-          edgeAlpha,
-          (latticeNoise(x, y, 151) - 0.5) * 0.36
-        );
-      }
-
-      if (granulation > 0.012 && roughness > 0.48) {
-        const dotX = centerX + (latticeNoise(x, y, 163) - 0.5) * glaze.cellSize * 0.56;
-        const dotY = centerY + (latticeNoise(x, y, 173) - 0.5) * glaze.cellSize * 0.56;
-        const dotRadius = Math.max(0.25, Math.min(0.58, glaze.cellSize * 0.08 + roughness * 0.18));
-        grainCtx.fillStyle = colorWithAlpha(paletteColor.ink, Math.min(0.045, granulation * 0.032));
-        grainCtx.beginPath();
-        grainCtx.arc(dotX, dotY, dotRadius, 0, Math.PI * 2);
-        grainCtx.fill();
-      }
-
-      if (!runoff && deposited > 0.006 && roughness > 0.5) {
-        const toothAlpha = Math.min(0.12, 0.035 + roughness * 0.046 + granulation * 0.018);
-        fillSoftEllipse(
-          toothCtx,
-          centerX + (latticeNoise(x, y, 181) - 0.5) * glaze.cellSize * 0.8,
-          centerY + (latticeNoise(x, y, 191) - 0.5) * glaze.cellSize * 0.8,
-          Math.max(0.5, glaze.cellSize * (0.18 + latticeNoise(x, y, 199) * 0.18)),
-          Math.max(0.35, glaze.cellSize * (0.1 + latticeNoise(x, y, 211) * 0.12)),
-          'rgba(0, 0, 0, 1)',
-          toothAlpha,
-          (latticeNoise(x, y, 223) - 0.5) * Math.PI
-        );
-      }
+    if (sample.roughness > 0.55 || brushId === 'pencil') {
+      fillSoftEllipse(
+        inkCtx,
+        sample.x,
+        sample.y,
+        Math.max(0.4, radius * 0.52),
+        Math.max(0.3, radius * 0.26),
+        paletteColor.ink,
+        brushId === 'pencil' ? 0.055 : 0.032,
+        sample.angle
+      );
     }
   }
 
-  renderRunoffLayer(runCtx, glaze, paletteColor);
+  for (const trail of material.trails) {
+    trailCtx.strokeStyle = colorWithAlpha(paletteColor.wash, trail.alpha);
+    trailCtx.lineWidth = Math.max(1, trail.width);
+    trailCtx.beginPath();
+    trailCtx.moveTo(trail.x, trail.y);
+    trailCtx.quadraticCurveTo(trail.x + trail.drift * 0.42, trail.y + trail.length * 0.5, trail.x + trail.drift, trail.y + trail.length);
+    trailCtx.stroke();
+    fillSoftEllipse(trailCtx, trail.x + trail.drift, trail.y + trail.length, trail.width * 1.9, trail.width * 1.25, paletteColor.wash, trail.alpha * 0.62);
+  }
+
+  for (const mark of material.rewetMarks) {
+    fillSoftDot(washCtx, mark.x, mark.y, mark.radius, paletteColor.wash, mark.alpha);
+    fillSoftEllipse(inkCtx, mark.x, mark.y, mark.radius * 0.42, mark.radius * 0.22, paletteColor.ink, mark.alpha * 0.32, mark.speed * 0.002);
+  }
+
+  for (const dot of material.grain) {
+    grainCtx.fillStyle = colorWithAlpha(paletteColor.ink, dot.alpha);
+    grainCtx.beginPath();
+    grainCtx.arc(dot.x, dot.y, dot.radius, 0, Math.PI * 2);
+    grainCtx.fill();
+  }
+
+  for (const dot of material.grain.slice(0, 80)) {
+    fillSoftEllipse(toothCtx, dot.x, dot.y, dot.radius * 2.4, dot.radius * 1.3, 'rgba(0, 0, 0, 1)', 0.045);
+  }
+
+  for (const layerCtx of [washCtx, inkCtx, trailCtx, grainCtx, toothCtx]) {
+    resetLayerTransform(layerCtx);
+  }
 
   paintCtx.globalCompositeOperation = 'multiply';
-  paintCtx.filter = `blur(${Math.max(1.4, glaze.cellSize * 0.38)}px)`;
+  paintCtx.filter = `blur(${Math.max(0.8, material.thickness * 0.08 * scale)}px)`;
   paintCtx.drawImage(wash, 0, 0);
   paintCtx.filter = 'none';
   paintCtx.globalCompositeOperation = 'destination-out';
-  paintCtx.globalAlpha = 0.34;
+  paintCtx.globalAlpha = 0.22;
   paintCtx.drawImage(tooth, 0, 0);
   paintCtx.globalCompositeOperation = 'multiply';
-  paintCtx.globalAlpha = 0.86;
-  paintCtx.filter = `blur(${Math.max(0.7, glaze.cellSize * 0.2)}px)`;
-  paintCtx.drawImage(runs, 0, 0);
-  paintCtx.filter = 'none';
+  paintCtx.globalAlpha = 0.76;
+  paintCtx.drawImage(trails, 0, 0);
   paintCtx.globalAlpha = 1;
-  paintCtx.filter = `blur(${Math.max(1.9, glaze.cellSize * 0.5)}px)`;
-  paintCtx.drawImage(pigment, 0, 0);
-  paintCtx.filter = 'none';
-  paintCtx.globalAlpha = 0.35;
-  paintCtx.filter = `blur(${Math.max(0.45, glaze.cellSize * 0.12)}px)`;
+  paintCtx.drawImage(ink, 0, 0);
+  paintCtx.globalAlpha = 0.42;
   paintCtx.drawImage(grain, 0, 0);
-  paintCtx.filter = 'none';
   paintCtx.globalAlpha = 1;
+  paintCtx.globalCompositeOperation = 'source-over';
 
   return paint;
 }
@@ -841,24 +771,23 @@ function createTrack(rawPoints, options = {}) {
   const id = crypto.randomUUID ? crypto.randomUUID() : `track-${Date.now()}-${state.tracks.length}`;
   const paletteIndex = state.tracks.length % watercolorPalettes.length;
   const seed = paletteIndex * 997 + state.tracks.length * 251 + brush.id.length * 53 + 17;
-  const baseSteps = starter ? 42 : brush.steps;
   const thickness = starter ? 12 : brush.thickness;
-  const watercolorBudget = chooseWatercolorBudget(points, {
+  const renderBudget = chooseRenderBudget(points, {
     starter,
-    steps: baseSteps,
-    minSteps: starter ? 30 : Math.min(brush.steps, 24),
-    maxCells: MAX_GLAZE_CELLS
+    maxSamples: MAX_RENDER_SAMPLES,
+    maxCanvasPixels: MAX_MATERIAL_CANVAS_PIXELS,
+    sampleSpacing: starter ? 14 : 18
   });
-  const glaze = simulateWatercolorStroke(points, {
+  const material = createStrokeMaterial(points, {
     seed,
-    cellSize: watercolorBudget.cellSize,
+    sampleCount: renderBudget.sampleCount,
+    canvasScale: renderBudget.canvasScale,
     thickness,
     water: starter ? 1.25 : brush.water,
-    pigment: starter ? 0.96 : brush.pigment,
-    steps: watercolorBudget.steps
+    pigment: starter ? 0.96 : brush.pigment
   });
   const buildMs = performance.now() - startedAt;
-  const limited = prepared.limited || watercolorBudget.limited;
+  const limited = prepared.limited || renderBudget.limited;
   const paletteColor = getBrushPalette(brush, state.tracks.length);
   const track = {
     id,
@@ -870,15 +799,17 @@ function createTrack(rawPoints, options = {}) {
     points,
     thickness,
     palette: paletteColor,
-    glaze,
-    glazeCanvas: null,
-    glazeDirty: true,
-    glazeDirtyAt: performance.now(),
-    glazeLastRebuildAt: 0,
+    material,
+    materialCanvas: null,
+    materialDirty: true,
+    materialDirtyAt: performance.now(),
+    materialLastRebuildAt: 0,
     limited,
     rawPointCount: prepared.rawPointCount,
     preLimitPointCount: prepared.preLimitPointCount,
-    glazeCellCount: glaze.water.length,
+    renderSampleCount: material.samples.length,
+    renderUnitCount: material.renderUnits,
+    materialCanvasScale: material.canvasScale,
     buildMs
   };
 
@@ -906,7 +837,7 @@ function addTrack(rawPoints, options = {}) {
   }
 
   state.tracks.push(track);
-  invalidateWatercolorMetrics();
+  invalidateRenderMetrics();
   syncRideWorld();
   updateInkMetric();
   if (options.recordHistory !== false && !options.starter) {
@@ -920,7 +851,8 @@ function addTrack(rawPoints, options = {}) {
     limited: track.limited,
     rawPoints: track.rawPointCount,
     preLimitPoints: track.preLimitPointCount,
-    cellCount: track.glazeCellCount,
+    renderSampleCount: track.renderSampleCount,
+    renderUnitCount: track.renderUnitCount,
     buildMs: Math.round(track.buildMs * 10) / 10
   });
   return track;
@@ -929,7 +861,7 @@ function addTrack(rawPoints, options = {}) {
 function insertTrack(track, index = state.tracks.length) {
   const safeIndex = Math.max(0, Math.min(index, state.tracks.length));
   state.tracks.splice(safeIndex, 0, track);
-  invalidateWatercolorMetrics();
+  invalidateRenderMetrics();
 }
 
 function removeTrack(track) {
@@ -939,7 +871,7 @@ function removeTrack(track) {
   } else {
     state.tracks = state.tracks.filter((candidate) => candidate.id !== track.id);
   }
-  invalidateWatercolorMetrics();
+  invalidateRenderMetrics();
   record('stroke-removed', { id: track.id });
   return index;
 }
@@ -1187,7 +1119,7 @@ function updateMetrics(deltaMs) {
     state.metrics.currentAir = 0;
   }
 
-  bleedRiderContact(telemetry);
+  rewetRiderContact(telemetry);
 
   speedMeter.textContent = `${speed.toFixed(1)} px/s`;
   airMeter.textContent = `${state.metrics.longestAir.toFixed(1)}s air`;
@@ -1203,13 +1135,13 @@ function updateMetrics(deltaMs) {
   publishTelemetry();
 }
 
-function markGlazeDirty(track) {
-  track.glazeDirty = true;
-  track.glazeDirtyAt = performance.now();
-  invalidateWatercolorMetrics();
+function markMaterialDirty(track) {
+  track.materialDirty = true;
+  track.materialDirtyAt = performance.now();
+  invalidateRenderMetrics();
 }
 
-function bleedRiderContact(telemetry) {
+function rewetRiderContact(telemetry) {
   if (!telemetry.grounded || !state.rider?.mounted) {
     return null;
   }
@@ -1220,7 +1152,7 @@ function bleedRiderContact(telemetry) {
   }
 
   const now = performance.now();
-  if (now - state.watercolor.lastBleedAt < RIDER_BLEED_INTERVAL_MS) {
+  if (now - state.material.lastRewetAt < RIDER_BLEED_INTERVAL_MS) {
     return null;
   }
 
@@ -1230,32 +1162,32 @@ function bleedRiderContact(telemetry) {
   }
 
   const track = state.tracks.find((candidate) => candidate.id === contact.trackId);
-  if (!track?.glaze || !track.collidable) {
+  if (!track?.material || !track.collidable) {
     return null;
   }
 
   const speed = Math.max(telemetry.speed, telemetry.engineSpeed ?? 0);
-  const result = rewetGlazeAtPoint(track.glaze, contact.point, {
+  const result = rewetStrokeMaterialAtPoint(track.material, contact.point, {
     radius: clampValue(13 + speed * 0.024, 14, 30),
     water: clampValue(0.055 + speed * 0.0005, 0.06, 0.24),
-    speed,
-    steps: speed > 180 ? 3 : 2
+    speed
   });
 
   if (result.affectedCellCount === 0) {
     return null;
   }
 
-  markGlazeDirty(track);
-  state.watercolor.lastBleedAt = now;
-  state.watercolor.lastBleedTrackId = track.id;
-  state.watercolor.lastBleedWater = result.addedWater;
-  state.metrics.watercolorBleeds += 1;
+  track.renderUnitCount = track.material.renderUnits;
+  markMaterialDirty(track);
+  state.material.lastRewetAt = now;
+  state.material.lastRewetTrackId = track.id;
+  state.material.lastRewetAmount = result.addedWater;
+  state.metrics.renderRewets += 1;
 
-  if (state.metrics.watercolorBleeds % 12 === 1) {
-    record('rider-bleed', {
+  if (state.metrics.renderRewets % 12 === 1) {
+    record('rider-rewet', {
       trackId: track.id,
-      cells: result.affectedCellCount,
+      marks: result.affectedCellCount,
       water: Math.round(result.addedWater * 1000) / 1000,
       speed: Math.round(speed * 10) / 10
     });
@@ -1274,21 +1206,27 @@ function renderTrack(track) {
   ctx.lineJoin = 'round';
 
   const now = performance.now();
-  const shouldRebuildGlaze =
-    !track.glazeCanvas || (track.glazeDirty && now - track.glazeLastRebuildAt >= REWET_CANVAS_REFRESH_MS);
+  const shouldRebuildMaterial =
+    !track.materialCanvas || (track.materialDirty && now - track.materialLastRebuildAt >= MATERIAL_CANVAS_REFRESH_MS);
 
-  if (shouldRebuildGlaze) {
-    track.glazeCanvas = createGlazeCanvas(track.glaze, track.palette, track.points);
-    track.glazeDirty = false;
-    track.glazeLastRebuildAt = now;
-    state.performance.glazeRebuilds += 1;
+  if (shouldRebuildMaterial) {
+    track.materialCanvas = createMaterialCanvas(track.material, track.palette, track.points, track.brushId);
+    track.materialDirty = false;
+    track.materialLastRebuildAt = now;
+    state.performance.materialRebuilds += 1;
   }
 
   const brushId = track.brushId ?? 'watercolor';
 
   ctx.globalAlpha = brushId === 'pencil' ? 0.58 : brushId === 'marker' ? 0.82 : 1;
   ctx.globalCompositeOperation = 'source-over';
-  ctx.drawImage(track.glazeCanvas, track.glaze.bounds.x, track.glaze.bounds.y);
+  ctx.drawImage(
+    track.materialCanvas,
+    track.material.bounds.x,
+    track.material.bounds.y,
+    track.material.bounds.width,
+    track.material.bounds.height
+  );
 
   if (brushId === 'pencil') {
     ctx.globalCompositeOperation = 'multiply';
@@ -1300,7 +1238,7 @@ function renderTrack(track) {
 
     ctx.globalAlpha = 0.2;
     ctx.setLineDash([1.5, 4.5]);
-    ctx.lineDashOffset = -((track.glaze.metrics?.seedCellCount ?? track.points.length) % 11);
+    ctx.lineDashOffset = -((track.material.metrics?.renderSampleCount ?? track.points.length) % 11);
     ctx.lineWidth = Math.max(0.8, track.thickness * 0.18);
     drawPath(track.points);
     ctx.stroke();
@@ -1337,7 +1275,7 @@ function renderTrack(track) {
 
   ctx.globalAlpha = 0.07;
   ctx.setLineDash([Math.max(4, track.thickness * 0.55), Math.max(6, track.thickness * 0.72)]);
-  ctx.lineDashOffset = -((track.glaze.metrics?.seedCellCount ?? track.points.length) % 23);
+  ctx.lineDashOffset = -((track.material.metrics?.renderSampleCount ?? track.points.length) % 23);
   ctx.lineWidth = Math.max(1.1, track.thickness * 0.14);
   drawPath(track.points);
   ctx.stroke();
@@ -1657,7 +1595,7 @@ function undoStroke() {
     }
   } else if (action.type === 'clear') {
     state.tracks = [...action.tracks];
-    invalidateWatercolorMetrics();
+    invalidateRenderMetrics();
   }
 
   syncRideWorld();
@@ -1668,7 +1606,7 @@ function undoStroke() {
 function clearCanvas() {
   const cleared = [...state.tracks];
   state.tracks = [];
-  invalidateWatercolorMetrics();
+  invalidateRenderMetrics();
   pushHistory({ type: 'clear', tracks: cleared });
   syncRideWorld();
   updateInkMetric();
@@ -1788,12 +1726,12 @@ window.RPK_RIDER = {
       limited: track.limited,
       rawPointCount: track.rawPointCount,
       preLimitPointCount: track.preLimitPointCount,
-      glazeCellCount: track.glazeCellCount,
+      renderSampleCount: track.renderSampleCount,
+      renderUnitCount: track.renderUnitCount,
+      materialCanvasScale: track.materialCanvasScale,
       buildMs: track.buildMs,
-      watercolor: {
-        ...track.glaze.metrics,
-        cellCount: track.glaze.water.length
-      }
+      render: { ...track.material.metrics },
+      watercolor: { ...track.material.metrics }
     })),
     brushes: Object.values(BRUSHES).map((brush) => ({
       id: brush.id,
@@ -1815,22 +1753,25 @@ window.RPK_RIDER = {
         }
       : null,
     metrics: { ...state.metrics },
-    watercolorDynamics: { ...state.watercolor },
+    renderDynamics: { ...state.material },
+    watercolorDynamics: { ...state.material },
     limits: {
       maxTrackPoints: MAX_TRACK_POINTS,
       maxTracks: MAX_TRACKS,
       maxHistory: MAX_HISTORY,
-      maxGlazeCells: MAX_GLAZE_CELLS,
+      maxRenderSamples: MAX_RENDER_SAMPLES,
+      maxMaterialCanvasPixels: MAX_MATERIAL_CANVAS_PIXELS,
       metricsCacheMs: METRICS_CACHE_MS,
-      rewetCanvasRefreshMs: REWET_CANVAS_REFRESH_MS
+      materialCanvasRefreshMs: MATERIAL_CANVAS_REFRESH_MS
     },
     performance: {
       ...state.performance,
-      watercolorMetricRecomputes: watercolorMetricsCache.stats().recomputes
+      renderMetricRecomputes: renderMetricsCache.stats().recomputes
     },
     recovery: { ...state.recovery },
     camera: { ...state.camera },
-    watercolor: getWatercolorMetrics(),
+    render: getRenderMetrics(),
+    watercolor: getRenderMetrics(),
     engine: {
       fps: ENGINE_FPS,
       lines: state.rideWorld.lines.length
