@@ -12,6 +12,11 @@ import {
 
 export const ENGINE_FPS = 40;
 export const MIN_LINE_LENGTH = 0.5;
+export const RIDE_LINE_TYPES = Object.freeze({
+  SOLID: LineTypes.SOLID,
+  ACC: LineTypes.ACC,
+  SCENERY: LineTypes.SCENERY
+});
 export const LINE_RIDER_CONSTANTS = {
   iterations: ITERATE,
   gravity: GRAVITY,
@@ -59,9 +64,14 @@ function makeEngine(startPosition, startVelocity) {
   return new CustomLineRiderEngine({ legacy: true }).setStart(startPosition, startVelocity);
 }
 
+export function normalizeLineType(lineType = RIDE_LINE_TYPES.SOLID) {
+  return Object.values(RIDE_LINE_TYPES).includes(lineType) ? lineType : RIDE_LINE_TYPES.SOLID;
+}
+
 export function pointsToLineRiderSegments(points, firstLineId = 1, type = LineTypes.SOLID) {
   const segments = [];
   let nextId = firstLineId;
+  const normalizedType = normalizeLineType(type);
 
   for (let i = 1; i < points.length; i += 1) {
     const a = points[i - 1];
@@ -74,7 +84,7 @@ export function pointsToLineRiderSegments(points, firstLineId = 1, type = LineTy
 
     segments.push({
       id: nextId,
-      type,
+      type: normalizedType,
       x1: a.x,
       y1: a.y,
       x2: b.x,
@@ -92,7 +102,7 @@ function buildLineData(tracks) {
   const lineToTrack = new Map();
 
   for (const track of tracks) {
-    const trackLines = pointsToLineRiderSegments(track.points, nextLineId, LineTypes.SOLID);
+    const trackLines = pointsToLineRiderSegments(track.points, nextLineId, track.lineType);
     for (const line of trackLines) {
       lines.push(line);
       lineToTrack.set(line.id, track.id);
@@ -271,7 +281,8 @@ export function createRider(start) {
 export function setRideTracks(world, tracks) {
   world.tracks = tracks.map((track) => ({
     id: track.id,
-    points: track.points.map(clonePoint)
+    points: track.points.map(clonePoint),
+    lineType: normalizeLineType(track.lineType)
   }));
   rebuildEngine(world);
   world.rider = makeRiderSnapshot(world, world.frameIndex, world.rider);
@@ -279,10 +290,11 @@ export function setRideTracks(world, tracks) {
   return world;
 }
 
-export function addRideTrack(world, id, points) {
+export function addRideTrack(world, id, points, lineType = RIDE_LINE_TYPES.SOLID) {
   world.tracks.push({
     id,
-    points: points.map(clonePoint)
+    points: points.map(clonePoint),
+    lineType: normalizeLineType(lineType)
   });
   rebuildEngine(world);
   world.rider = makeRiderSnapshot(world, world.frameIndex, world.rider);

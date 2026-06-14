@@ -5,6 +5,7 @@ import test from 'node:test';
 const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
 const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const favicon = readFileSync(new URL('../public/favicon.svg', import.meta.url), 'utf8');
+const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 
 test('menu-open state keeps the floating menu toggle reachable', () => {
   assert.doesNotMatch(styles, /#app\.menu-open\s+\.chrome-shell,\s*#app\.menu-open\s+\.status-strip\s*\{[^}]*pointer-events:\s*none/s);
@@ -23,4 +24,28 @@ test('mobile chrome remains compact over the watercolor canvas', () => {
 test('favicon is served from the Vite base path to avoid GitHub Pages root 404s', () => {
   assert.match(indexHtml, /<link rel="icon" type="image\/svg\+xml" href="%BASE_URL%favicon\.svg" \/>/);
   assert.match(favicon, /<svg[^>]+viewBox="0 0 64 64"/);
+});
+
+test('mouse-first brush controls expose bounded input and recovery hooks', () => {
+  assert.match(indexHtml, /id="watercolorTool"/);
+  assert.match(indexHtml, /id="pencilTool"/);
+  assert.match(indexHtml, /id="markerTool"/);
+  assert.match(indexHtml, /id="eraseTool"/);
+  assert.doesNotMatch(indexHtml, /id="drawTool"/);
+  assert.doesNotMatch(indexHtml, /Space rides/);
+  assert.match(mainSource, /WHEEL_DELTA_MAX/);
+  assert.match(mainSource, /RIDE_LINE_TYPES\.SOLID/);
+  assert.match(mainSource, /RIDE_LINE_TYPES\.SCENERY/);
+  assert.match(mainSource, /RIDE_LINE_TYPES\.ACC/);
+  assert.match(mainSource, /brushId/);
+  assert.doesNotMatch(mainSource, /window\.addEventListener\('keydown'/);
+  assert.doesNotMatch(mainSource, /event\.key\.toLowerCase\(\) === 'b'/);
+  assert.doesNotMatch(mainSource, /event\.key\.toLowerCase\(\) === 'e'/);
+  assert.doesNotMatch(mainSource, /event\.key\.toLowerCase\(\) === 'r'/);
+  assert.doesNotMatch(mainSource, /event\.code === 'Space'/);
+  assert.match(mainSource, /lostpointercapture/);
+  assert.match(mainSource, /window\.addEventListener\('blur',\s*cancelPointerState\)/);
+  assert.match(mainSource, /limits:\s*\{/);
+  assert.match(mainSource, /performance:\s*\{/);
+  assert.match(mainSource, /recovery:\s*\{/);
 });

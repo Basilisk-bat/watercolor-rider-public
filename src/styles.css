@@ -56,6 +56,12 @@ button {
   cursor: cell;
 }
 
+#game.pencil-mode,
+#game.marker-mode,
+#game.watercolor-mode {
+  cursor: crosshair;
+}
+
 #game.spawn-mode {
   cursor: copy;
 }
@@ -479,7 +485,7 @@ button {
 
   .tools {
     grid-auto-flow: row;
-    grid-template-columns: repeat(4, 40px);
+    grid-template-columns: repeat(6, 40px);
     grid-auto-columns: initial;
     grid-auto-rows: 40px;
     flex: 1 1 auto;
@@ -534,7 +540,7 @@ button {
   }
 
   .tools {
-    grid-template-columns: repeat(4, 38px);
+    grid-template-columns: repeat(6, 38px);
     grid-auto-rows: 38px;
     gap: 4px;
   }

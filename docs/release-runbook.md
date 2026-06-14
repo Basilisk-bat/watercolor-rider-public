@@ -34,7 +34,7 @@ npm run release:pages
 Use the live Pages URL and verify:
 
 - The page loads with no console errors, page errors, or failed asset responses.
-- Brush and eraser buttons change mode.
+- Watercolor, Pencil, Marker, and Eraser buttons change mode.
 - Spawn Rider arms once, the next canvas click places one rider, and spawn exits.
 - Ride/Pause starts the Line Rider simulation and frame/speed telemetry advance.
 - Wheel or trackpad zoom changes `camera.targetZoom` and `camera.zoom`.
@@ -48,7 +48,7 @@ Automated smoke:
 npm run smoke:live
 ```
 
-The script uses locally installed Chrome through `playwright-core`. It is intentionally not part of CI because hosted runners may not have Chrome installed. Add `-- --headed` to watch the smoke run, or `-- --screenshots C:\path\to\qa-folder` to capture desktop and mobile screenshots.
+The script uses locally installed Chrome through `playwright-core`. It is intentionally not part of CI because hosted runners may not have Chrome installed. Add `-- --stress` for dense-stroke and recovery checks, `-- --headed` to watch the smoke run, or `-- --screenshots C:\path\to\qa-folder` to capture desktop and mobile screenshots.
 
 ## Public Source Sync
 

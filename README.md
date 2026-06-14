@@ -8,8 +8,8 @@ A cozy minimalist browser toy inspired by line rider: paint soft ink rails, then
 
 ## Play
 
-- Brush and erase rails directly on the canvas.
-- Use the floating dock for Menu, Brush, Eraser, and Ride/Pause.
+- Draw with Watercolor, Pencil, or Marker directly on the canvas; cut rails with Eraser.
+- Use the floating dock for Menu, brush tools, Eraser, and Ride/Pause.
 - Use the menu for Spawn Rider, Reset Rider, Undo, Clear, Diagnostics, and Help.
 - Zoom with mouse wheel, trackpad, or pinch gestures.
 - Open diagnostics for speed, air time, ink, zoom, wetness, pigment mass, runoff, and ride status.

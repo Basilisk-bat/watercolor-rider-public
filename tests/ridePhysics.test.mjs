@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   ENGINE_FPS,
   LINE_RIDER_CONSTANTS,
+  RIDE_LINE_TYPES,
   addRideTrack,
   createRideWorld,
   getRideTelemetry,
@@ -11,6 +12,7 @@ import {
   pointsToLineRiderSegments,
   removeRideTrack,
   resetRide,
+  setRideTracks,
   spawnRider,
   stepRide
 } from '../src/ridePhysics.js';
@@ -61,6 +63,51 @@ test('flat rail preserves glide instead of skidding to a halt', () => {
   assert.ok(telemetry.distance > 90);
 });
 
+test('scenery line stays visible in world data but does not create ride contacts', () => {
+  const world = createRideWorld();
+  addRideTrack(
+    world,
+    'guide',
+    [
+      { x: 0, y: 100 },
+      { x: 400, y: 100 }
+    ],
+    RIDE_LINE_TYPES.SCENERY
+  );
+  resetRide(world, { x: 0, y: 95 });
+
+  assert.equal(world.tracks[0].lineType, RIDE_LINE_TYPES.SCENERY);
+  assert.equal(world.lines[0].type, RIDE_LINE_TYPES.SCENERY);
+
+  stepFrames(world, 90);
+  const telemetry = getRideTelemetry(world);
+
+  assert.equal(telemetry.contacts.some((contact) => contact.trackId === 'guide'), false);
+  assert.notEqual(telemetry.status, 'riding');
+});
+
+test('accelerator line produces native speed gain versus equivalent solid line', () => {
+  const solid = createRideWorld();
+  const marker = createRideWorld();
+  const points = [
+    { x: 0, y: 100 },
+    { x: 520, y: 100 }
+  ];
+
+  addRideTrack(solid, 'solid', points, RIDE_LINE_TYPES.SOLID);
+  addRideTrack(marker, 'marker', points, RIDE_LINE_TYPES.ACC);
+  resetRide(solid, { x: 0, y: 95 });
+  resetRide(marker, { x: 0, y: 95 });
+
+  stepFrames(solid, 80);
+  stepFrames(marker, 80);
+  const solidTelemetry = getRideTelemetry(solid);
+  const markerTelemetry = getRideTelemetry(marker);
+
+  assert.ok(markerTelemetry.distance > solidTelemetry.distance + 12);
+  assert.ok(markerTelemetry.speed > solidTelemetry.speed);
+});
+
 test('downhill rail accelerates under Line Rider engine gravity', () => {
   const world = createRideWorld();
   addRideTrack(world, 'hill', [
@@ -99,6 +146,58 @@ test('rider exposes Line Rider body points and mounted state', () => {
   assert.ok(world.rider.points.TAIL);
   assert.ok(world.rider.points.PEG);
   assert.ok(world.rider.points.SHOULDER);
+});
+
+test('polyline conversion preserves requested native Line Rider line types', () => {
+  const points = [
+    { x: 0, y: 0 },
+    { x: 30, y: 0 }
+  ];
+
+  assert.equal(pointsToLineRiderSegments(points, 1, RIDE_LINE_TYPES.SOLID)[0].type, RIDE_LINE_TYPES.SOLID);
+  assert.equal(pointsToLineRiderSegments(points, 1, RIDE_LINE_TYPES.ACC)[0].type, RIDE_LINE_TYPES.ACC);
+  assert.equal(pointsToLineRiderSegments(points, 1, RIDE_LINE_TYPES.SCENERY)[0].type, RIDE_LINE_TYPES.SCENERY);
+  assert.equal(pointsToLineRiderSegments(points, 1, 999)[0].type, RIDE_LINE_TYPES.SOLID);
+});
+
+test('ride world retains per-track line types and defaults missing types to solid', () => {
+  const world = createRideWorld();
+
+  setRideTracks(world, [
+    {
+      id: 'guide',
+      lineType: RIDE_LINE_TYPES.SCENERY,
+      points: [
+        { x: 0, y: 100 },
+        { x: 80, y: 100 }
+      ]
+    },
+    {
+      id: 'legacy',
+      points: [
+        { x: 100, y: 100 },
+        { x: 180, y: 100 }
+      ]
+    }
+  ]);
+
+  assert.equal(world.tracks[0].lineType, RIDE_LINE_TYPES.SCENERY);
+  assert.equal(world.tracks[1].lineType, RIDE_LINE_TYPES.SOLID);
+  assert.equal(world.lines[0].type, RIDE_LINE_TYPES.SCENERY);
+  assert.equal(world.lines[1].type, RIDE_LINE_TYPES.SOLID);
+
+  addRideTrack(
+    world,
+    'boost',
+    [
+      { x: 200, y: 100 },
+      { x: 280, y: 100 }
+    ],
+    RIDE_LINE_TYPES.ACC
+  );
+
+  assert.equal(world.tracks.at(-1).lineType, RIDE_LINE_TYPES.ACC);
+  assert.equal(world.lines.at(-1).type, RIDE_LINE_TYPES.ACC);
 });
 
 test('collision update detection survives production constructor minification', () => {

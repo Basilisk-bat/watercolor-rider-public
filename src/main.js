@@ -5,7 +5,6 @@ import {
   distance,
   erasePolyline,
   nearestDistanceToPolyline,
-  simplifyPoints,
   totalLength
 } from './trackGeometry.js';
 import {
@@ -17,6 +16,7 @@ import {
 } from './cameraControl.js';
 import {
   ENGINE_FPS,
+  RIDE_LINE_TYPES,
   createRideWorld,
   getRideTelemetry,
   nearestTrackContact,
@@ -25,7 +25,15 @@ import {
   spawnRider,
   stepRide
 } from './ridePhysics.js';
+import { getRideRecovery } from './recoveryRules.js';
 import { aggregateGlazeMetrics, rewetGlazeAtPoint, simulateWatercolorStroke } from './watercolorSim.js';
+import {
+  WORKLOAD_LIMITS,
+  chooseWatercolorBudget,
+  createTimedCache,
+  prepareTrackPoints,
+  shouldSampleStrokePoint
+} from './workloadLimits.js';
 
 createIcons({ icons });
 
@@ -38,7 +46,9 @@ const menuSpawn = document.querySelector('#menuSpawn');
 const menuHelp = document.querySelector('#menuHelp');
 const menuHelpPanel = document.querySelector('#menuHelpPanel');
 const menuClose = document.querySelector('#menuClose');
-const drawTool = document.querySelector('#drawTool');
+const watercolorTool = document.querySelector('#watercolorTool');
+const pencilTool = document.querySelector('#pencilTool');
+const markerTool = document.querySelector('#markerTool');
 const eraseTool = document.querySelector('#eraseTool');
 const playTool = document.querySelector('#playTool');
 const resetTool = document.querySelector('#resetTool');
@@ -59,22 +69,81 @@ const debugRunoff = document.querySelector('[data-diagnostic="runoff"]');
 
 const CHROME_IDLE_MS = 2200;
 const RIDER_BLEED_INTERVAL_MS = 70;
+const {
+  maxTrackPoints: MAX_TRACK_POINTS,
+  maxTracks: MAX_TRACKS,
+  maxHistory: MAX_HISTORY,
+  maxGlazeCells: MAX_GLAZE_CELLS,
+  metricsCacheMs: METRICS_CACHE_MS,
+  rewetCanvasRefreshMs: REWET_CANVAS_REFRESH_MS,
+  eraserIntervalMs: ERASER_INTERVAL_MS,
+  eraserMinScreenDistance: ERASER_MIN_SCREEN_DISTANCE,
+  pinchDeadzoneRatio: PINCH_DEADZONE_RATIO,
+  wheelDeltaMax: WHEEL_DELTA_MAX,
+  maxRawStrokePoints: MAX_RAW_STROKE_POINTS
+} = WORKLOAD_LIMITS;
 let chromeTimer = null;
 
-const palette = [
+const watercolorPalettes = [
   { ink: 'rgba(36, 72, 96, 0.78)', wash: 'rgba(64, 132, 154, 0.16)' },
   { ink: 'rgba(54, 95, 72, 0.78)', wash: 'rgba(96, 153, 105, 0.16)' },
   { ink: 'rgba(142, 83, 95, 0.72)', wash: 'rgba(191, 107, 126, 0.15)' },
   { ink: 'rgba(113, 86, 56, 0.74)', wash: 'rgba(198, 145, 79, 0.14)' }
 ];
 
+const BRUSHES = Object.freeze({
+  watercolor: {
+    id: 'watercolor',
+    label: 'Watercolor',
+    lineType: RIDE_LINE_TYPES.SOLID,
+    rideable: true,
+    collidable: true,
+    thickness: 10,
+    water: 1.05,
+    pigment: 1.08,
+    steps: 36
+  },
+  pencil: {
+    id: 'pencil',
+    label: 'Pencil',
+    lineType: RIDE_LINE_TYPES.SCENERY,
+    rideable: false,
+    collidable: false,
+    thickness: 5,
+    water: 0.26,
+    pigment: 0.48,
+    steps: 18,
+    palette: { ink: 'rgba(45, 47, 45, 0.72)', wash: 'rgba(88, 87, 80, 0.055)' }
+  },
+  marker: {
+    id: 'marker',
+    label: 'Marker',
+    lineType: RIDE_LINE_TYPES.ACC,
+    rideable: true,
+    collidable: true,
+    thickness: 12,
+    water: 0.68,
+    pigment: 1.34,
+    steps: 24,
+    palette: { ink: 'rgba(125, 56, 85, 0.9)', wash: 'rgba(191, 74, 116, 0.18)' }
+  }
+});
+
+const brushTools = new Map([
+  ['watercolor', watercolorTool],
+  ['pencil', pencilTool],
+  ['marker', markerTool]
+]);
+
 const state = {
   mode: 'draw',
+  brushId: 'watercolor',
   playing: false,
   pointerDown: false,
   pointers: new Map(),
   pinch: null,
   pointer: null,
+  lastStrokeScreen: null,
   currentStroke: [],
   tracks: [],
   history: [],
@@ -112,6 +181,26 @@ const state = {
     lastBleedTrackId: null,
     lastBleedWater: 0
   },
+  eraser: {
+    lastAt: 0,
+    lastPoint: null
+  },
+  performance: {
+    lastStrokeBuildMs: 0,
+    worstStrokeBuildMs: 0,
+    lastFrameMs: 0,
+    worstFrameMs: 0,
+    glazeRebuilds: 0,
+    watercolorMetricRecomputes: 0,
+    lastTrackLimited: false,
+    lastTrackRejected: null
+  },
+  recovery: {
+    reason: null,
+    status: null,
+    autoPaused: false,
+    at: 0
+  },
   ui: {
     chromeVisible: true,
     debugOpen: false,
@@ -119,6 +208,19 @@ const state = {
   },
   log: []
 };
+
+const watercolorMetricsCache = createTimedCache(
+  () => {
+    const metrics = aggregateGlazeMetrics(state.tracks.map((track) => track.glaze));
+    state.performance.watercolorMetricRecomputes += 1;
+    return metrics;
+  },
+  { ttlMs: METRICS_CACHE_MS }
+);
+
+function invalidateWatercolorMetrics() {
+  watercolorMetricsCache.invalidate();
+}
 
 function record(type, detail = {}) {
   state.log.push({
@@ -133,7 +235,19 @@ function record(type, detail = {}) {
 }
 
 function getWatercolorMetrics() {
-  return aggregateGlazeMetrics(state.tracks.map((track) => track.glaze));
+  return watercolorMetricsCache.get();
+}
+
+function getBrush(brushId = state.brushId) {
+  return BRUSHES[brushId] ?? BRUSHES.watercolor;
+}
+
+function getBrushPalette(brush, trackIndex) {
+  if (brush.id === 'watercolor') {
+    return watercolorPalettes[trackIndex % watercolorPalettes.length];
+  }
+
+  return brush.palette;
 }
 
 function updateDebugDiagnostics() {
@@ -162,6 +276,7 @@ function publishTelemetry() {
   const speed = state.rider ? Math.hypot(state.rider.velocity.x, state.rider.velocity.y) : 0;
   app.dataset.playing = String(state.playing);
   app.dataset.mode = state.mode;
+  app.dataset.brush = state.brushId;
   app.dataset.tracks = String(state.tracks.length);
   app.dataset.speed = String(Math.round(speed * 10) / 10);
   app.dataset.distance = String(Math.round(state.metrics.bestDistance));
@@ -185,16 +300,42 @@ function modeStatus() {
   if (state.spawn.active) {
     return 'spawn';
   }
-  return state.mode === 'draw' ? 'brush' : 'erase';
+  return state.mode === 'draw' ? state.brushId : 'erase';
 }
 
-function setStatus(status) {
+function setStatus(status, options = {}) {
   statusStrip.textContent = status;
-  publishTelemetry();
+  if (options.publish !== false) {
+    publishTelemetry();
+  }
 }
 
 function clampValue(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function pushHistory(action) {
+  state.history.push(action);
+  while (state.history.length > MAX_HISTORY) {
+    state.history.shift();
+  }
+}
+
+function clearRecovery() {
+  state.recovery = {
+    reason: null,
+    status: null,
+    autoPaused: false,
+    at: 0
+  };
+}
+
+function setPlayIcon(playing) {
+  playTool.classList.toggle('active', playing);
+  playTool.setAttribute('aria-label', playing ? 'Pause' : 'Ride');
+  playTool.setAttribute('title', playing ? 'Pause' : 'Ride');
+  playTool.innerHTML = playing ? '<i data-lucide="pause"></i>' : '<i data-lucide="play"></i>';
+  createIcons({ icons });
 }
 
 function hideChrome() {
@@ -307,6 +448,40 @@ function setZoom(nextZoom, anchorScreen = { x: state.width / 2, y: state.height 
   publishTelemetry();
 }
 
+function clearCurrentStroke() {
+  state.currentStroke = [];
+  state.lastStrokeScreen = null;
+}
+
+function appendStrokePoint(point, screen, options = {}) {
+  const last = state.currentStroke[state.currentStroke.length - 1];
+  const shouldAppend =
+    options.force ||
+    state.currentStroke.length === 0 ||
+    (state.currentStroke.length < MAX_RAW_STROKE_POINTS &&
+      shouldSampleStrokePoint(state.lastStrokeScreen, screen, state.camera.targetZoom));
+
+  if (!shouldAppend) {
+    return false;
+  }
+
+  if (last && distance(last, point) < 0.001) {
+    state.lastStrokeScreen = { ...screen };
+    return false;
+  }
+
+  state.currentStroke.push(point);
+  state.lastStrokeScreen = { ...screen };
+  return true;
+}
+
+function cancelPointerState() {
+  state.pointerDown = false;
+  state.pinch = null;
+  state.pointers.clear();
+  clearCurrentStroke();
+}
+
 function pinchPoints() {
   return Array.from(state.pointers.values()).slice(0, 2);
 }
@@ -318,7 +493,7 @@ function beginPinchZoom() {
   }
 
   state.pointerDown = false;
-  state.currentStroke = [];
+  clearCurrentStroke();
   state.pinch = {
     distance: distance(points[0], points[1]),
     zoom: state.camera.targetZoom,
@@ -342,6 +517,10 @@ function updatePinchZoom() {
 
   const nextDistance = distance(points[0], points[1]);
   if (state.pinch.distance <= 0) {
+    return;
+  }
+
+  if (Math.abs(nextDistance - state.pinch.distance) / state.pinch.distance < PINCH_DEADZONE_RATIO) {
     return;
   }
 
@@ -646,50 +825,103 @@ function syncRideWorld() {
 
 function createTrack(rawPoints, options = {}) {
   const { starter = false, preserve = false } = options;
-  const points = preserve || starter ? rawPoints.map((point) => ({ ...point })) : chaikinSmooth(simplifyPoints(rawPoints), 2);
+  const brush = getBrush(starter ? 'watercolor' : options.brushId);
+  const startedAt = performance.now();
+  const prepared = prepareTrackPoints(rawPoints, {
+    starter,
+    preserve,
+    maxPoints: MAX_TRACK_POINTS
+  });
+  const points = prepared.points;
 
   if (points.length < 2 || totalLength(points) < 16) {
     return null;
   }
 
   const id = crypto.randomUUID ? crypto.randomUUID() : `track-${Date.now()}-${state.tracks.length}`;
-  const paletteIndex = state.tracks.length % palette.length;
-  const seed = paletteIndex * 997 + state.tracks.length * 251 + 17;
+  const paletteIndex = state.tracks.length % watercolorPalettes.length;
+  const seed = paletteIndex * 997 + state.tracks.length * 251 + brush.id.length * 53 + 17;
+  const baseSteps = starter ? 42 : brush.steps;
+  const thickness = starter ? 12 : brush.thickness;
+  const watercolorBudget = chooseWatercolorBudget(points, {
+    starter,
+    steps: baseSteps,
+    minSteps: starter ? 30 : Math.min(brush.steps, 24),
+    maxCells: MAX_GLAZE_CELLS
+  });
   const glaze = simulateWatercolorStroke(points, {
     seed,
-    thickness: starter ? 12 : 10,
-    water: starter ? 1.25 : 1.05,
-    pigment: starter ? 0.96 : 1.08,
-    steps: starter ? 42 : 36
+    cellSize: watercolorBudget.cellSize,
+    thickness,
+    water: starter ? 1.25 : brush.water,
+    pigment: starter ? 0.96 : brush.pigment,
+    steps: watercolorBudget.steps
   });
+  const buildMs = performance.now() - startedAt;
+  const limited = prepared.limited || watercolorBudget.limited;
+  const paletteColor = getBrushPalette(brush, state.tracks.length);
   const track = {
     id,
+    brushId: brush.id,
+    brushLabel: brush.label,
+    lineType: brush.lineType,
+    rideable: brush.rideable,
+    collidable: brush.collidable,
     points,
-    thickness: starter ? 12 : 10,
-    palette: palette[paletteIndex],
+    thickness,
+    palette: paletteColor,
     glaze,
-    glazeCanvas: null
+    glazeCanvas: null,
+    glazeDirty: true,
+    glazeDirtyAt: performance.now(),
+    glazeLastRebuildAt: 0,
+    limited,
+    rawPointCount: prepared.rawPointCount,
+    preLimitPointCount: prepared.preLimitPointCount,
+    glazeCellCount: glaze.water.length,
+    buildMs
   };
+
+  state.performance.lastStrokeBuildMs = buildMs;
+  state.performance.worstStrokeBuildMs = Math.max(state.performance.worstStrokeBuildMs, buildMs);
+  state.performance.lastTrackLimited = limited;
+  state.performance.lastTrackRejected = null;
 
   return track;
 }
 
 function addTrack(rawPoints, options = {}) {
+  if (!options.starter && state.tracks.length >= MAX_TRACKS) {
+    state.performance.lastTrackRejected = 'track-limit';
+    setStatus('limit');
+    record('track-limit', { tracks: state.tracks.length, maxTracks: MAX_TRACKS });
+    return null;
+  }
+
   const track = createTrack(rawPoints, options);
 
   if (!track) {
+    state.performance.lastTrackRejected = 'too-short';
     return null;
   }
 
   state.tracks.push(track);
+  invalidateWatercolorMetrics();
   syncRideWorld();
   updateInkMetric();
   if (options.recordHistory !== false && !options.starter) {
-    state.history.push({ type: 'add', tracks: [track] });
+    pushHistory({ type: 'add', tracks: [track] });
   }
   record(options.starter ? 'starter-track' : 'stroke-added', {
+    brushId: track.brushId,
+    lineType: track.lineType,
     points: track.points.length,
-    length: Math.round(totalLength(track.points))
+    length: Math.round(totalLength(track.points)),
+    limited: track.limited,
+    rawPoints: track.rawPointCount,
+    preLimitPoints: track.preLimitPointCount,
+    cellCount: track.glazeCellCount,
+    buildMs: Math.round(track.buildMs * 10) / 10
   });
   return track;
 }
@@ -697,6 +929,7 @@ function addTrack(rawPoints, options = {}) {
 function insertTrack(track, index = state.tracks.length) {
   const safeIndex = Math.max(0, Math.min(index, state.tracks.length));
   state.tracks.splice(safeIndex, 0, track);
+  invalidateWatercolorMetrics();
 }
 
 function removeTrack(track) {
@@ -706,6 +939,7 @@ function removeTrack(track) {
   } else {
     state.tracks = state.tracks.filter((candidate) => candidate.id !== track.id);
   }
+  invalidateWatercolorMetrics();
   record('stroke-removed', { id: track.id });
   return index;
 }
@@ -717,30 +951,54 @@ function updateInkMetric() {
   publishTelemetry();
 }
 
-function setMode(mode) {
+function updateToolChrome() {
+  for (const [brushId, button] of brushTools) {
+    const active = state.mode === 'draw' && state.brushId === brushId;
+    button?.classList.toggle('active', active);
+    button?.setAttribute('aria-pressed', String(active));
+  }
+
+  eraseTool.classList.toggle('active', state.mode === 'erase');
+  eraseTool.setAttribute('aria-pressed', String(state.mode === 'erase'));
+  canvas.classList.remove('watercolor-mode', 'pencil-mode', 'marker-mode', 'erase-mode', 'spawn-mode');
+
+  if (state.mode === 'erase') {
+    canvas.classList.add('erase-mode');
+  } else {
+    canvas.classList.add(`${state.brushId}-mode`);
+  }
+}
+
+function setMode(mode, options = {}) {
   state.spawn.active = false;
-  state.mode = mode;
-  state.currentStroke = [];
-  drawTool.classList.toggle('active', mode === 'draw');
-  eraseTool.classList.toggle('active', mode === 'erase');
-  canvas.classList.toggle('erase-mode', mode === 'erase');
-  canvas.classList.remove('spawn-mode');
+  if (mode === 'erase') {
+    state.mode = 'erase';
+  } else {
+    state.mode = 'draw';
+    state.brushId = getBrush(options.brushId ?? state.brushId).id;
+  }
+  clearCurrentStroke();
+  updateToolChrome();
   setStatus(modeStatus());
-  record('mode', { mode });
+  record('mode', { mode: state.mode, brushId: state.brushId });
+}
+
+function setBrush(brushId) {
+  setMode('draw', { brushId });
 }
 
 function setPlaying(playing) {
   state.playing = playing;
-  playTool.classList.toggle('active', playing);
-  playTool.setAttribute('aria-label', playing ? 'Pause' : 'Ride');
-  playTool.setAttribute('title', playing ? 'Pause' : 'Ride');
-  playTool.innerHTML = playing ? '<i data-lucide="pause"></i>' : '<i data-lucide="play"></i>';
-  createIcons({ icons });
+  if (playing) {
+    clearRecovery();
+  }
+  setPlayIcon(playing);
   setStatus(playing ? 'riding' : modeStatus());
   record(playing ? 'play' : 'pause');
 }
 
 function resetRider() {
+  clearRecovery();
   const startTrack = state.tracks[0];
   const start = state.spawn.start ?? startTrack?.points[0] ?? { x: state.width * 0.12, y: state.height * 0.28 };
   const spawnOffset = state.spawn.start ? { x: 0, y: 0 } : { x: 1, y: -5 };
@@ -759,18 +1017,23 @@ function resetRider() {
 
 function setSpawnMode(active) {
   state.spawn.active = active;
-  state.currentStroke = [];
-  canvas.classList.toggle('spawn-mode', active);
-  canvas.classList.toggle('erase-mode', !active && state.mode === 'erase');
+  clearCurrentStroke();
+  if (active) {
+    canvas.classList.remove('watercolor-mode', 'pencil-mode', 'marker-mode', 'erase-mode');
+    canvas.classList.add('spawn-mode');
+  } else {
+    updateToolChrome();
+  }
   setPlaying(false);
   setStatus(modeStatus());
   record(active ? 'spawn-armed' : 'spawn-cancelled');
 }
 
 function spawnAt(point) {
+  clearRecovery();
   state.spawn.start = { ...point };
   state.spawn.active = false;
-  canvas.classList.remove('spawn-mode');
+  updateToolChrome();
   state.rider = spawnRider(state.rideWorld, point);
   state.metrics.startX = state.rider.position.x;
   state.metrics.bestDistance = 0;
@@ -785,7 +1048,30 @@ function spawnAt(point) {
   return state.rider;
 }
 
-function eraseAt(point) {
+function shouldThrottleErase(point, options = {}) {
+  if (!options.throttle) {
+    return false;
+  }
+
+  const now = performance.now();
+  const minMove = ERASER_MIN_SCREEN_DISTANCE / Math.max(0.001, state.camera.zoom);
+  const movedEnough = !state.eraser.lastPoint || distance(state.eraser.lastPoint, point) >= minMove;
+  const waitedEnough = now - state.eraser.lastAt >= ERASER_INTERVAL_MS;
+
+  if (!movedEnough && !waitedEnough) {
+    return true;
+  }
+
+  state.eraser.lastAt = now;
+  state.eraser.lastPoint = { ...point };
+  return false;
+}
+
+function eraseAt(point, options = {}) {
+  if (shouldThrottleErase(point, options)) {
+    return false;
+  }
+
   const radius = 24 / state.camera.zoom;
   const removals = [];
   const additions = [];
@@ -800,7 +1086,7 @@ function eraseAt(point) {
     removals.push({ track, index });
 
     fragments.forEach((fragment, fragmentIndex) => {
-      const nextTrack = createTrack(fragment, { preserve: true });
+      const nextTrack = createTrack(fragment, { preserve: true, brushId: track.brushId ?? 'watercolor' });
       if (nextTrack) {
         additions.push({ track: nextTrack, index: index + fragmentIndex });
       }
@@ -811,20 +1097,24 @@ function eraseAt(point) {
     return false;
   }
 
-  for (const addition of additions) {
+  const availableSlots = Math.max(0, MAX_TRACKS - state.tracks.length);
+  const limitedAdditions = additions.slice(0, availableSlots);
+
+  for (const addition of limitedAdditions) {
     insertTrack(addition.track, addition.index);
   }
 
   syncRideWorld();
   updateInkMetric();
-  state.history.push({
+  pushHistory({
     type: 'erase',
     removed: removals,
-    added: additions.map(({ track }) => track)
+    added: limitedAdditions.map(({ track }) => track)
   });
   record('erase-cut', {
     removed: removals.length,
-    added: additions.length
+    added: limitedAdditions.length,
+    discarded: additions.length - limitedAdditions.length
   });
   return true;
 }
@@ -858,6 +1148,28 @@ function getTrackBounds() {
   return bounds;
 }
 
+function pauseForRecovery(reason, status, detail = {}) {
+  if (state.recovery.reason === reason && state.recovery.autoPaused && !state.playing) {
+    return;
+  }
+
+  state.playing = false;
+  setPlayIcon(false);
+  state.recovery = {
+    reason,
+    status,
+    autoPaused: true,
+    at: Number(performance.now().toFixed(1)),
+    ...detail
+  };
+  setStatus(status);
+  record('recovery-pause', {
+    reason,
+    status,
+    ...detail
+  });
+}
+
 function updateMetrics(deltaMs) {
   if (!state.rider) {
     return;
@@ -879,22 +1191,31 @@ function updateMetrics(deltaMs) {
 
   speedMeter.textContent = `${speed.toFixed(1)} px/s`;
   airMeter.textContent = `${state.metrics.longestAir.toFixed(1)}s air`;
-  setStatus(telemetry.status);
-  publishTelemetry();
 
   const bounds = getTrackBounds();
-  if (state.rider.position.y > bounds.maxY + 520 || state.rider.position.x < bounds.minX - 520 || state.rider.position.x > bounds.maxX + 700) {
-    setPlaying(false);
-    setStatus('rinse');
-    record('out-of-bounds', {
-      x: Math.round(state.rider.position.x),
-      y: Math.round(state.rider.position.y)
-    });
+  const recovery = getRideRecovery(telemetry, state.rider, bounds);
+  if (recovery) {
+    pauseForRecovery(recovery.reason, recovery.status, recovery.detail);
+    return;
   }
+
+  setStatus(telemetry.status, { publish: false });
+  publishTelemetry();
+}
+
+function markGlazeDirty(track) {
+  track.glazeDirty = true;
+  track.glazeDirtyAt = performance.now();
+  invalidateWatercolorMetrics();
 }
 
 function bleedRiderContact(telemetry) {
   if (!telemetry.grounded || !state.rider?.mounted) {
+    return null;
+  }
+
+  const contactTrackId = telemetry.contacts[0]?.trackId;
+  if (!contactTrackId) {
     return null;
   }
 
@@ -904,12 +1225,12 @@ function bleedRiderContact(telemetry) {
   }
 
   const contact = nearestTrackContact(state.rideWorld, state.rider.position);
-  if (!contact || contact.distance > 34) {
+  if (!contact || contact.distance > 34 || contact.trackId !== contactTrackId) {
     return null;
   }
 
   const track = state.tracks.find((candidate) => candidate.id === contact.trackId);
-  if (!track?.glaze) {
+  if (!track?.glaze || !track.collidable) {
     return null;
   }
 
@@ -925,7 +1246,7 @@ function bleedRiderContact(telemetry) {
     return null;
   }
 
-  track.glazeCanvas = null;
+  markGlazeDirty(track);
   state.watercolor.lastBleedAt = now;
   state.watercolor.lastBleedTrackId = track.id;
   state.watercolor.lastBleedWater = result.addedWater;
@@ -952,14 +1273,61 @@ function renderTrack(track) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  if (!track.glazeCanvas) {
+  const now = performance.now();
+  const shouldRebuildGlaze =
+    !track.glazeCanvas || (track.glazeDirty && now - track.glazeLastRebuildAt >= REWET_CANVAS_REFRESH_MS);
+
+  if (shouldRebuildGlaze) {
     track.glazeCanvas = createGlazeCanvas(track.glaze, track.palette, track.points);
+    track.glazeDirty = false;
+    track.glazeLastRebuildAt = now;
+    state.performance.glazeRebuilds += 1;
   }
 
-  ctx.globalAlpha = 1;
+  const brushId = track.brushId ?? 'watercolor';
+
+  ctx.globalAlpha = brushId === 'pencil' ? 0.58 : brushId === 'marker' ? 0.82 : 1;
   ctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(track.glazeCanvas, track.glaze.bounds.x, track.glaze.bounds.y);
 
+  if (brushId === 'pencil') {
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.globalAlpha = 0.58;
+    ctx.strokeStyle = track.palette.ink;
+    ctx.lineWidth = Math.max(1.2, track.thickness * 0.28);
+    drawPath(track.points);
+    ctx.stroke();
+
+    ctx.globalAlpha = 0.2;
+    ctx.setLineDash([1.5, 4.5]);
+    ctx.lineDashOffset = -((track.glaze.metrics?.seedCellCount ?? track.points.length) % 11);
+    ctx.lineWidth = Math.max(0.8, track.thickness * 0.18);
+    drawPath(track.points);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+    return;
+  }
+
+  if (brushId === 'marker') {
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.globalAlpha = 0.68;
+    ctx.strokeStyle = track.palette.ink;
+    ctx.lineWidth = Math.max(3.5, track.thickness * 0.48);
+    drawPath(track.points);
+    ctx.stroke();
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 0.28;
+    ctx.strokeStyle = colorWithAlpha(track.palette.wash, 0.34);
+    ctx.lineWidth = Math.max(8, track.thickness * 0.72);
+    drawPath(track.points);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'multiply';
   ctx.globalAlpha = 0.11;
   ctx.strokeStyle = track.palette.ink;
@@ -1082,18 +1450,33 @@ function renderCurrentStroke() {
     return;
   }
 
+  const brush = getBrush();
+  const paletteColor = getBrushPalette(brush, state.tracks.length);
+
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.strokeStyle = 'rgba(64, 132, 154, 0.18)';
-  ctx.lineWidth = 22;
-  ctx.globalAlpha = 0.38;
+
+  if (brush.id === 'pencil') {
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = paletteColor.ink;
+    ctx.lineWidth = 1.7;
+    ctx.setLineDash([1.5, 4]);
+    drawPath(state.currentStroke);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  ctx.strokeStyle = paletteColor.wash;
+  ctx.lineWidth = brush.id === 'marker' ? 17 : 22;
+  ctx.globalAlpha = brush.id === 'marker' ? 0.42 : 0.38;
   drawPath(state.currentStroke);
   ctx.stroke();
 
-  ctx.globalAlpha = 0.24;
-  ctx.strokeStyle = 'rgba(36, 72, 96, 0.72)';
-  ctx.lineWidth = 2.2;
+  ctx.globalAlpha = brush.id === 'marker' ? 0.58 : 0.24;
+  ctx.strokeStyle = paletteColor.ink;
+  ctx.lineWidth = brush.id === 'marker' ? 4.8 : 2.2;
   drawPath(state.currentStroke);
   ctx.stroke();
   ctx.restore();
@@ -1190,11 +1573,12 @@ function onPointerDown(event) {
   }
 
   if (state.mode === 'erase') {
-    eraseAt(point);
+    eraseAt(point, { throttle: false });
     return;
   }
 
-  state.currentStroke = [point];
+  clearCurrentStroke();
+  appendStrokePoint(point, screen, { force: true });
 }
 
 function onPointerMove(event) {
@@ -1216,14 +1600,11 @@ function onPointerMove(event) {
   }
 
   if (state.mode === 'erase') {
-    eraseAt(point);
+    eraseAt(point, { throttle: true });
     return;
   }
 
-  const last = state.currentStroke[state.currentStroke.length - 1];
-  if (!last || distance(last, point) >= 3) {
-    state.currentStroke.push(point);
-  }
+  appendStrokePoint(point, screen);
 }
 
 function onPointerUp(event) {
@@ -1237,17 +1618,23 @@ function onPointerUp(event) {
       state.pinch = null;
     }
     state.pointerDown = false;
-    state.currentStroke = [];
+    clearCurrentStroke();
     return;
+  }
+
+  const screen = screenPoint(event);
+  const point = screenToWorld(screen);
+  if (state.mode === 'draw' && state.currentStroke.length > 0) {
+    appendStrokePoint(point, screen, { force: true });
   }
 
   state.pointerDown = false;
 
   if (state.mode === 'draw' && state.currentStroke.length > 1) {
-    addTrack(state.currentStroke);
+    addTrack(state.currentStroke, { brushId: state.brushId });
   }
 
-  state.currentStroke = [];
+  clearCurrentStroke();
 }
 
 function undoStroke() {
@@ -1270,6 +1657,7 @@ function undoStroke() {
     }
   } else if (action.type === 'clear') {
     state.tracks = [...action.tracks];
+    invalidateWatercolorMetrics();
   }
 
   syncRideWorld();
@@ -1280,7 +1668,8 @@ function undoStroke() {
 function clearCanvas() {
   const cleared = [...state.tracks];
   state.tracks = [];
-  state.history.push({ type: 'clear', tracks: cleared });
+  invalidateWatercolorMetrics();
+  pushHistory({ type: 'clear', tracks: cleared });
   syncRideWorld();
   updateInkMetric();
   setPlaying(false);
@@ -1291,6 +1680,7 @@ function clearCanvas() {
 
 let previous = performance.now();
 function loop(now) {
+  const frameStartedAt = performance.now();
   const delta = Math.min(now - previous, 33);
   previous = now;
 
@@ -1306,10 +1696,15 @@ function loop(now) {
   }
 
   render();
+  const frameMs = performance.now() - frameStartedAt;
+  state.performance.lastFrameMs = frameMs;
+  state.performance.worstFrameMs = Math.max(state.performance.worstFrameMs, frameMs);
   requestAnimationFrame(loop);
 }
 
-drawTool.addEventListener('click', () => setMode('draw'));
+watercolorTool.addEventListener('click', () => setBrush('watercolor'));
+pencilTool.addEventListener('click', () => setBrush('pencil'));
+markerTool.addEventListener('click', () => setBrush('marker'));
 eraseTool.addEventListener('click', () => setMode('erase'));
 playTool.addEventListener('click', () => setPlaying(!state.playing));
 menuToggle.addEventListener('click', () => setMenuOpen(!state.ui.menuOpen));
@@ -1351,7 +1746,8 @@ canvas.addEventListener(
   (event) => {
     event.preventDefault();
     const point = screenPoint(event);
-    const factor = Math.exp(-event.deltaY * 0.0012);
+    const deltaY = clampValue(event.deltaY, -WHEEL_DELTA_MAX, WHEEL_DELTA_MAX);
+    const factor = Math.exp(-deltaY * 0.0012);
     setZoom(state.camera.targetZoom * factor, point);
   },
   { passive: false }
@@ -1360,35 +1756,12 @@ app.addEventListener('pointermove', revealChrome);
 app.addEventListener('pointerdown', revealChrome);
 app.addEventListener('touchstart', revealChrome, { passive: true });
 app.addEventListener('focusin', revealChrome);
-window.addEventListener('keydown', (event) => {
-  revealChrome();
-
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
-    event.preventDefault();
-    undoStroke();
-    return;
-  }
-
-  if (event.code === 'Space' && !event.target?.closest?.('button')) {
-    event.preventDefault();
-    setPlaying(!state.playing);
-    return;
-  }
-
-  if (event.key === 'Escape') {
-    if (state.spawn.active) {
-      setSpawnMode(false);
-      return;
-    }
-    if (state.ui.debugOpen) {
-      setDebugOpen(false);
-      return;
-    }
-    if (state.ui.menuOpen) {
-      setMenuOpen(false);
-    }
+canvas.addEventListener('lostpointercapture', () => {
+  if (state.pointerDown || state.pinch) {
+    cancelPointerState();
   }
 });
+window.addEventListener('blur', cancelPointerState);
 window.addEventListener('resize', resize);
 
 window.RPK_RIDER = {
@@ -1401,13 +1774,33 @@ window.RPK_RIDER = {
   spawnAt,
   getState: () => ({
     mode: state.mode,
+    brushId: state.brushId,
     playing: state.playing,
     spawn: { ...state.spawn },
     tracks: state.tracks.map((track) => ({
       id: track.id,
+      brushId: track.brushId,
+      lineType: track.lineType,
+      rideable: track.rideable,
+      collidable: track.collidable,
       points: track.points.length,
       length: totalLength(track.points),
-      watercolor: { ...track.glaze.metrics }
+      limited: track.limited,
+      rawPointCount: track.rawPointCount,
+      preLimitPointCount: track.preLimitPointCount,
+      glazeCellCount: track.glazeCellCount,
+      buildMs: track.buildMs,
+      watercolor: {
+        ...track.glaze.metrics,
+        cellCount: track.glaze.water.length
+      }
+    })),
+    brushes: Object.values(BRUSHES).map((brush) => ({
+      id: brush.id,
+      label: brush.label,
+      lineType: brush.lineType,
+      rideable: brush.rideable,
+      collidable: brush.collidable
     })),
     rider: state.rider
       ? {
@@ -1423,6 +1816,19 @@ window.RPK_RIDER = {
       : null,
     metrics: { ...state.metrics },
     watercolorDynamics: { ...state.watercolor },
+    limits: {
+      maxTrackPoints: MAX_TRACK_POINTS,
+      maxTracks: MAX_TRACKS,
+      maxHistory: MAX_HISTORY,
+      maxGlazeCells: MAX_GLAZE_CELLS,
+      metricsCacheMs: METRICS_CACHE_MS,
+      rewetCanvasRefreshMs: REWET_CANVAS_REFRESH_MS
+    },
+    performance: {
+      ...state.performance,
+      watercolorMetricRecomputes: watercolorMetricsCache.stats().recomputes
+    },
+    recovery: { ...state.recovery },
     camera: { ...state.camera },
     watercolor: getWatercolorMetrics(),
     engine: {
