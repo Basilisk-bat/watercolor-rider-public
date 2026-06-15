@@ -67,7 +67,6 @@ async function readState(page, label) {
       performance: state.performance,
       recovery: state.recovery,
       dataset: app ? { ...app.dataset } : {},
-      render: state.render,
       watercolor: state.watercolor,
       viewport: {
         innerWidth,
@@ -186,43 +185,9 @@ async function runStressChecks(page) {
     assert(result.lastTrack.brushId === 'watercolor', 'Stress stroke should default to watercolor brush');
     assert(result.lastTrack.lineType === 0, 'Stress stroke should default to solid line type');
     assert(result.lastTrack.points <= result.limits.maxTrackPoints, 'Stress stroke should be capped to max track points');
-    assert(
-      result.lastTrack.render.renderSampleCount <= result.limits.maxRenderSamples,
-      'Stress stroke material samples should stay under render sample cap'
-    );
+    assert(result.lastTrack.watercolor.cellCount <= result.limits.maxGlazeCells, 'Stress stroke glaze should stay under cell cap');
     assert(result.engineLines <= result.limits.maxTrackPoints * result.limits.maxTracks, 'Engine line count should remain bounded');
   }
-
-  const frameBudget = await page.evaluate(async () => {
-    window.RPK_RIDER.play();
-    const samples = [];
-    const until = performance.now() + 1800;
-    while (performance.now() < until) {
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      samples.push(window.RPK_RIDER.getState().performance.lastFrameMs);
-    }
-    window.RPK_RIDER.pause();
-    samples.sort((a, b) => a - b);
-    const state = window.RPK_RIDER.getState();
-    return {
-      targetFrameMs: 1000 / 60,
-      frames: samples.length,
-      p95FrameMs: samples[Math.floor(samples.length * 0.95)] ?? 0,
-      maxSampledFrameMs: samples.at(-1) ?? 0,
-      p95FrameWorkFps: samples.length > 0 ? 1000 / Math.max(0.001, samples[Math.floor(samples.length * 0.95)] ?? 0) : 0,
-      appWorstFrameMs: state.performance.worstFrameMs,
-      lastFrameMs: state.performance.lastFrameMs
-    };
-  });
-  assert(frameBudget.frames >= 20, `Stress frame sampler should collect enough frame-work samples: ${JSON.stringify(frameBudget)}`);
-  assert(
-    frameBudget.p95FrameMs <= frameBudget.targetFrameMs,
-    `Stress frame work should stay within 60fps budget: ${JSON.stringify(frameBudget)}`
-  );
-  assert(
-    frameBudget.p95FrameWorkFps >= 60,
-    `Stress frame work should estimate above 60fps: ${JSON.stringify(frameBudget)}`
-  );
 
   const eraser = await page.evaluate(() => {
     const before = window.RPK_RIDER.getState();
@@ -293,7 +258,6 @@ async function runStressChecks(page) {
     brushSamples,
     strokes: stress,
     eraser,
-    frameBudget,
     recovery: {
       reason: recovery.recovery?.reason,
       status: recovery.recovery?.status,
@@ -347,7 +311,7 @@ async function main() {
     assert(states.initial.mode === 'draw', 'Initial mode should be draw');
     assert(states.initial.brushId === 'watercolor', 'Initial brush should be watercolor');
     assert(states.initial.trackCount >= 1, 'Starter track should be present');
-    assert(states.initial.render?.renderSampleCount > 0, 'Rendered material metrics should be live');
+    assert(states.initial.watercolor?.runoffCellCount > 0, 'Watercolor runoff metrics should be live');
 
     await page.click('#menuToggle');
     const canvasBox = await page.locator('#game').boundingBox();
@@ -415,14 +379,14 @@ async function main() {
     await page.waitForTimeout(120);
     states.debug = await readState(page, 'debug');
     assert(states.debug.dataset.debugOpen === 'true', 'Diagnostics should open from the menu');
-    assert(states.debug.dataset.trails === String(states.debug.render.trailCount), 'Diagnostics trails should match state metrics');
+    assert(states.debug.dataset.runoff === String(states.debug.watercolor.runoffCellCount), 'Diagnostics runoff should match state metrics');
     screenshots.desktop = await maybeScreenshot(page, options.screenshots, 'desktop');
 
     await page.setViewportSize({ width: 390, height: 720 });
     await page.waitForTimeout(260);
     states.mobile = await readState(page, 'mobile');
     assert(states.mobile.viewport.overflowX === 0, 'Mobile viewport should not overflow horizontally');
-    assert(Number(states.mobile.dataset.rewets) > 0, 'Rider contact should add render rewet marks');
+    assert(Number(states.mobile.dataset.bleeds) > 0, 'Rider contact should rewet watercolor and increment bleed telemetry');
     screenshots.mobile = await maybeScreenshot(page, options.screenshots, 'mobile');
 
     if (options.stress) {

@@ -38,9 +38,9 @@ Use the live Pages URL and verify:
 - Spawn Rider arms once, the next canvas click places one rider, and spawn exits.
 - Ride/Pause starts the Line Rider simulation and frame/speed telemetry advance.
 - Wheel or trackpad zoom changes `camera.targetZoom` and `camera.zoom`.
-- Diagnostics opens and reports speed, air, ink, zoom, texture, rendered marks, trails, and status.
+- Diagnostics opens and reports speed, air, ink, zoom, wetness, pigment, deposited pigment, runoff, and status.
 - Mobile width has no horizontal overflow.
-- Watercolor reads as a soft cached wash with rewet blooms and trails, not a square-cell simulation.
+- Watercolor reads as soft wash/bleed/runs, not square-cell marks.
 
 Automated smoke:
 

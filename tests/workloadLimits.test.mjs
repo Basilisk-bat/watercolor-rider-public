@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   WORKLOAD_LIMITS,
-  chooseRenderBudget,
+  chooseWatercolorBudget,
   createTimedCache,
+  estimateGlazeCellCount,
   prepareTrackPoints
 } from '../src/workloadLimits.js';
 
@@ -35,16 +36,16 @@ test('normal strokes stay visually unchanged by workload caps', () => {
   assert.deepEqual(prepared.points.at(-1), raw.at(-1));
 });
 
-test('large strokes choose bounded render samples and canvas scale', () => {
+test('large watercolor strokes choose adaptive cell sizes under the glaze budget', () => {
   const raw = denseWave(2600).map((point) => ({ x: point.x, y: point.y * 1.8 }));
   const prepared = prepareTrackPoints(raw);
-  const budget = chooseRenderBudget(prepared.points);
+  const budget = chooseWatercolorBudget(prepared.points, { steps: 36 });
 
   assert.ok(budget.limited);
-  assert.ok(budget.sampleCount <= WORKLOAD_LIMITS.maxRenderSamples);
-  assert.ok(budget.canvasScale > 0);
-  assert.ok(budget.canvasScale <= 1);
-  assert.ok(budget.canvasPixels <= WORKLOAD_LIMITS.maxMaterialCanvasPixels);
+  assert.ok(budget.cellSize >= 4);
+  assert.ok(budget.steps <= 36);
+  assert.ok(budget.cellCount <= WORKLOAD_LIMITS.maxGlazeCells);
+  assert.equal(estimateGlazeCellCount(prepared.points, budget.cellSize), budget.cellCount);
 });
 
 test('timed cache invalidates explicitly and skips recompute inside cadence', () => {
